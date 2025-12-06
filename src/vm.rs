@@ -1,11 +1,11 @@
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
-    builtins::{ProgramFn, builtin_get, get_builtins},
+    builtins::{ProgramFn, all_builtins, builtin_get, builtin_push},
     tokenizer::{Operator, Token, Value},
 };
 
@@ -25,6 +25,10 @@ enum Inst {
         dst: Addr,
         collection: Addr,
         index: Addr,
+    },
+    PushToCollection {
+        collection: Addr,
+        value: Addr,
     },
     Push {
         src: Addr,
@@ -75,6 +79,7 @@ const RESULT_REG1: Addr = Addr::Abs(0);
 const RESULT_REG2: Addr = Addr::Abs(1);
 const ZERO_REG: Addr = Addr::Abs(2);
 const TRASH_REG: Addr = Addr::Abs(3);
+const EMPTY_LIST_REG: Addr = Addr::Abs(4);
 const ARG_REG_START: u32 = 10;
 const ARG_REG_COUNT: u32 = 10;
 const RESERVED_REGS: u32 = 20;
@@ -92,7 +97,7 @@ pub struct Compilation<'a> {
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
         let mut functions = HashMap::new();
-        for (i, (name, func)) in get_builtins().iter().enumerate() {
+        for (i, (name, func)) in all_builtins().iter().enumerate() {
             functions.insert(Rc::from(*name), (*func, i));
         }
         Compilation {
@@ -220,6 +225,26 @@ impl<'a> Compilation<'a> {
             AstNodeKind::FunctionCall(name, args) => {
                 self.compile_function_args(args);
                 self.compile_function_call(name, args.len(), dst_suggestion, expr)
+            }
+            AstNodeKind::List(nodes) => {
+                self.push_instruction(
+                    Inst::Load {
+                        dst: dst_suggestion,
+                        src: EMPTY_LIST_REG,
+                    },
+                    expr,
+                );
+                for node in nodes.iter() {
+                    let value_reg = self.compile_expression(node, RESULT_REG1);
+                    self.push_instruction(
+                        Inst::PushToCollection {
+                            collection: dst_suggestion,
+                            value: value_reg,
+                        },
+                        node,
+                    );
+                }
+                dst_suggestion
             }
             _ => todo!(),
         }
@@ -372,6 +397,10 @@ impl<'a> Vm<'a> {
             Value::Integer(0);
             ctx.variables.len() + RESERVED_REGS as usize + STACK_SIZE as usize
         ];
+        let Addr::Abs(empty_list_reg) = EMPTY_LIST_REG else {
+            unreachable!();
+        };
+        memory[empty_list_reg as usize] = Value::List(Rc::new(RefCell::new(Vec::new())));
         for (lit_value, lit_reg) in ctx.literals.iter() {
             let Addr::Abs(lit_reg) = *lit_reg else {
                 panic!("Literal register is not absolute");
@@ -456,6 +485,12 @@ impl<'a> Vm<'a> {
                         builtin_get(&[collection.clone(), index.clone()])
                             .expect("builtin_get failed"),
                     );
+                }
+                Inst::PushToCollection { collection, value } => {
+                    let collection = self.mem_get(collection);
+                    let value = self.mem_get(value);
+                    builtin_push(&[collection.clone(), value.clone()])
+                        .expect("builtin_push failed");
                 }
                 Inst::Push { src } => {
                     self.sp += 1;

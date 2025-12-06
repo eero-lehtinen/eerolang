@@ -20,7 +20,7 @@ pub struct Program {
 impl Program {
     pub fn new(block: Vec<AstNode>, tokens: Vec<Token>) -> Self {
         let builtins = HashMap::<String, ProgramFn>::from_iter(
-            get_builtins()
+            all_builtins()
                 .iter()
                 .map(|(name, func)| (name.to_string(), *func)),
         );

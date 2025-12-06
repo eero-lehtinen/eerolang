@@ -135,6 +135,23 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     Ok(Value::String(Rc::from(substring.to_owned())))
 }
 
+pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
+    let [target, value] = args else {
+        return Err(format!("Expects (list, value), got {}", dbg_display(args)));
+    };
+
+    match target {
+        Value::List(l) => {
+            l.borrow_mut().push(value.clone());
+            fn_ok()
+        }
+        _ => Err(format!(
+            "Expects (list) as first argument, got {}",
+            target.dbg_display()
+        )),
+    }
+}
+
 pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
     let [target, index, value] = args else {
         return Err(format!(
@@ -298,13 +315,14 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
 pub type ProgramFnRes = Result<Value, String>;
 pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 
-pub fn get_builtins() -> Vec<(&'static str, ProgramFn)> {
+pub fn all_builtins() -> Vec<(&'static str, ProgramFn)> {
     vec![
         ("print", builtin_print),
         ("readfile", builtin_readfile),
         ("split", builtin_split),
         ("parseint", builtin_parseint),
         ("substr", builtin_substr),
+        ("push", builtin_push),
         ("set", builtin_set),
         ("get", builtin_get),
         ("len", builtin_len),

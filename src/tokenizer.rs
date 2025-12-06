@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use log::trace;
 
@@ -21,6 +21,28 @@ pub enum TokenKind {
     KeywordIn,
     KeywordIf,
     KeywordElse,
+}
+
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenKind::Assign => write!(f, "="),
+            TokenKind::Operator(op) => write!(f, "{}", op.dbg_display()),
+            TokenKind::LParen => write!(f, "("),
+            TokenKind::RParen => write!(f, ")"),
+            TokenKind::LSquareParen => write!(f, "["),
+            TokenKind::RSquareParen => write!(f, "]"),
+            TokenKind::LBrace => write!(f, "{{"),
+            TokenKind::RBrace => write!(f, "}}"),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::Literal(val) => write!(f, "{}", val.dbg_display()),
+            TokenKind::Ident(name) => write!(f, "ident({})", name),
+            TokenKind::KeywordFor => write!(f, "for"),
+            TokenKind::KeywordIn => write!(f, "in"),
+            TokenKind::KeywordIf => write!(f, "if"),
+            TokenKind::KeywordElse => write!(f, "else"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

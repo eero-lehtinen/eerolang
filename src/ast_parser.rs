@@ -52,7 +52,13 @@ fn parse_list<'a, I: TokIter<'a>>(
             iter.next();
             break;
         } else {
-            fatal("Expected ',' or closing token in list", next.unwrap());
+            fatal(
+                &format!(
+                    "Expected separator '{}' or closing token '{}' in list",
+                    separator, end_token,
+                ),
+                next.unwrap(),
+            );
         }
     }
     elements
