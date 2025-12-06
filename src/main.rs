@@ -2,11 +2,13 @@ use std::{sync::OnceLock, time::Instant};
 
 use log::error;
 
-use crate::program::Program;
+use crate::vm::Vm;
 
 mod ast_parser;
+mod builtins;
 mod program;
 mod tokenizer;
+mod vm;
 
 static SOURCE: OnceLock<String> = OnceLock::new();
 
@@ -34,15 +36,19 @@ fn main() {
     let block = ast_parser::parse(&tokens);
     let parse_end = Instant::now();
 
+    let compile_start = Instant::now();
+    let compilation = vm::compile(&block);
+    let compile_end = Instant::now();
+
     let exec_start = Instant::now();
-    let mut program = Program::new(block, tokens);
-    program.execute();
+    Vm::new(compilation).run();
     let exec_end = Instant::now();
 
     println!(
-        "tokenized in {:?}, parsed in {:?}, executed in {:?}",
+        "tokenized in {:?}, parsed in {:?}, compiled in {:?}, executed in {:?}",
         tok_end - tok_start,
         parse_end - parse_start,
+        compile_end - compile_start,
         exec_end - exec_start
     );
 }

@@ -15,7 +15,7 @@ pub enum AstNodeKind {
     FunctionCall(VarName, Vec<AstNode>),
     /// index, item, list, body
     ForLoop(VarName, Option<VarName>, Box<AstNode>, Vec<AstNode>),
-    IfExpression(Box<AstNode>, Vec<AstNode>, Vec<AstNode>),
+    IfStatement(Box<AstNode>, Vec<AstNode>, Vec<AstNode>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
     List(Vec<AstNode>),
     Literal(Value),
@@ -148,7 +148,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     }
 }
 
-fn parse_if_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
+fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let if_token = iter.next().unwrap();
     let token_idx = if_token.index;
     trace!("Parsing if expression, if token: {:?}", if_token);
@@ -169,7 +169,7 @@ fn parse_if_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     }
     AstNode {
         token_idx,
-        kind: AstNodeKind::IfExpression(Box::new(condition), block, else_block),
+        kind: AstNodeKind::IfStatement(Box::new(condition), block, else_block),
     }
 }
 
@@ -318,7 +318,7 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
             }
         }
         TokenKind::KeywordFor => parse_for_loop(iter),
-        TokenKind::KeywordIf => parse_if_expression(iter),
+        TokenKind::KeywordIf => parse_if_statement(iter),
         _ => return None,
     };
     Some(statement)

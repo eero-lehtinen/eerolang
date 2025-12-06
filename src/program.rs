@@ -1,307 +1,14 @@
 use foldhash::{HashMap, HashMapExt};
-use std::{cell::RefCell, io::Write, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
-    tokenizer::{Operator, Range, Token, Value, dbg_display},
+    tokenizer::{Operator, Token, Value},
 };
 
-fn fn_ok() -> ProgramFnRes {
-    Ok(Value::Integer(1))
-}
+use crate::builtins::*;
 
-fn builtin_print(args: &mut [Value]) -> ProgramFnRes {
-    let mut w = std::io::stdout();
-    for (i, arg) in args.iter().enumerate() {
-        match arg {
-            Value::Integer(i) => write!(&mut w, "{}", i).unwrap(),
-            Value::Float(f) => write!(&mut w, "{}", f).unwrap(),
-            Value::String(s) => write!(&mut w, "{}", s).unwrap(),
-            Value::Range(r) => {
-                write!(&mut w, "{}..{}", r.start, r.end).unwrap();
-            }
-            Value::List(l) => {
-                write!(&mut w, "[").unwrap();
-                for (j, item) in l.borrow().iter().enumerate() {
-                    match item {
-                        Value::Integer(ii) => write!(&mut w, "{}", ii).unwrap(),
-                        Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
-                        Value::String(ss) => write!(&mut w, "\"{}\"", ss).unwrap(),
-                        Value::List(_) => write!(&mut w, "<nested list>").unwrap(),
-                        Value::Range(r) => write!(&mut w, "(range {},{})", r.start, r.end).unwrap(),
-                    }
-                    if j < l.borrow().len() - 1 {
-                        print!(", ");
-                    }
-                }
-                write!(&mut w, "]").unwrap();
-            }
-        }
-        if i < args.len() - 1 {
-            write!(&mut w, " ").unwrap();
-        }
-    }
-    writeln!(&mut w).unwrap();
-    w.flush().unwrap();
-    fn_ok()
-}
-
-fn builtin_readfile(args: &mut [Value]) -> ProgramFnRes {
-    let [Value::String(filename)] = &args else {
-        return Err(format!("Expects (string), got {}", dbg_display(args)));
-    };
-
-    let content = std::fs::read_to_string(filename.as_ref())
-        .map_err(|_| format!("Failed to read file: {}", filename))?;
-
-    Ok(Value::String(content.trim().into()))
-}
-
-fn builtin_split(args: &mut [Value]) -> ProgramFnRes {
-    let [Value::String(s), Value::String(delim)] = &args else {
-        return Err(format!(
-            "Expects (string, string), got {}",
-            dbg_display(args)
-        ));
-    };
-
-    let parts: Vec<Value> = s
-        .split(delim.as_ref())
-        .map(|part| Value::String(Rc::from(part)))
-        .collect();
-
-    Ok(Value::List(Rc::new(RefCell::new(parts))))
-}
-
-fn builtin_parseint(args: &mut [Value]) -> ProgramFnRes {
-    let [Value::String(s)] = &args else {
-        return Err(format!("Expects (string), got {}", dbg_display(args)));
-    };
-
-    let int_value = s
-        .parse::<i64>()
-        .map_err(|_| format!("Failed to parse integer from string: {}", s))?;
-
-    Ok(Value::Integer(int_value))
-}
-
-fn builtin_substr(args: &mut [Value]) -> ProgramFnRes {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(format!(
-            "Expects (string, int, opt int), got {}",
-            dbg_display(args)
-        ));
-    }
-    let string = match &args[0] {
-        Value::String(s) => s,
-        _ => {
-            return Err(format!(
-                "Expects (string) as first argument, got {}",
-                args[0].dbg_display()
-            ));
-        }
-    };
-    let start = match &args[1] {
-        Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                args[1].dbg_display()
-            ));
-        }
-    };
-    let mut end = if args.get(2).is_some() {
-        match &args[2] {
-            Value::Integer(i) => *i,
-            _ => {
-                return Err(format!(
-                    "Expects (int) as third argument, got {}",
-                    args[2].dbg_display()
-                ));
-            }
-        }
-    } else {
-        string.len() as i64
-    };
-
-    if start < 0 || start > end {
-        return Err(format!(
-            "Expects start to be non-negative and less than end, got start: {}, end: {}",
-            start, end
-        ));
-    }
-    if end < 0 {
-        end = string.len() as i64 - end.abs();
-    }
-    end = end.min(string.len() as i64);
-
-    let substring = &string[start as usize..end as usize];
-    Ok(Value::String(Rc::from(substring)))
-}
-
-fn builtin_set(args: &mut [Value]) -> ProgramFnRes {
-    let [target, index, value] = args else {
-        return Err(format!(
-            "Expects (list, int, value), got {}",
-            dbg_display(args)
-        ));
-    };
-
-    let index = match &index {
-        Value::Integer(i) => *i as usize,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                index.dbg_display()
-            ));
-        }
-    };
-
-    match target {
-        Value::List(l) => {
-            if index >= l.borrow().len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    l.borrow().len(),
-                    index
-                ));
-            }
-            l.borrow_mut()[index] = value.clone();
-            fn_ok()
-        }
-        _ => Err(format!(
-            "Expects (list) as first argument, got {}",
-            target.dbg_display()
-        )),
-    }
-}
-
-fn builtin_get(args: &mut [Value]) -> ProgramFnRes {
-    let [target, index] = args else {
-        return Err(format!(
-            "Expects (list/string, int), got {}",
-            dbg_display(args)
-        ));
-    };
-
-    let index = match index {
-        Value::Integer(i) => *i as usize,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                index.dbg_display()
-            ));
-        }
-    };
-
-    match target {
-        Value::List(l) => {
-            if index >= l.borrow().len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    l.borrow().len(),
-                    index
-                ));
-            }
-            Ok(l.borrow()[index].clone())
-        }
-        Value::String(s) => {
-            if index >= s.len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    s.len(),
-                    index
-                ));
-            }
-            Ok(Value::String(Rc::from(
-                s.chars().nth(index).unwrap().to_string(),
-            )))
-        }
-        _ => Err(format!(
-            "Expects (list/string) as first argument, got {}",
-            target.dbg_display()
-        )),
-    }
-}
-
-fn builtin_len(args: &mut [Value]) -> ProgramFnRes {
-    let [len] = args else {
-        return Err(format!("Expects (list/string), got {}", dbg_display(args)));
-    };
-
-    let len = match &len {
-        Value::String(s) => s.len() as i64,
-        Value::List(l) => l.borrow().len() as i64,
-        _ => return Err(format!("Expects (list/string), got {}", len.dbg_display())),
-    };
-
-    Ok(Value::Integer(len))
-}
-
-fn builtin_mod(args: &mut [Value]) -> ProgramFnRes {
-    let [a, b] = args else {
-        return Err(format!("Expects (int, int), got {}", dbg_display(args)));
-    };
-
-    let a = match a {
-        Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as first argument, got {}",
-                a.dbg_display()
-            ));
-        }
-    };
-
-    let b = match b {
-        Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                b.dbg_display()
-            ));
-        }
-    };
-
-    Ok(Value::Integer(a % b))
-}
-
-fn builtin_range(args: &mut [Value]) -> ProgramFnRes {
-    if args.is_empty() || args.len() > 2 {
-        return Err(format!("Expects (int, opt int), got {}", dbg_display(args)));
-    };
-
-    let mut start = match &args[0] {
-        Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as first argument, got {}",
-                args[0].dbg_display()
-            ));
-        }
-    };
-
-    let end = match args.get(1) {
-        Some(Value::Integer(i)) => *i,
-        None => {
-            let tmp = start;
-            start = 0;
-            tmp
-        }
-        _ => {
-            return Err(format!(
-                "Expects (opt int) as second argument, got {}",
-                args[1].dbg_display()
-            ));
-        }
-    };
-
-    Ok(Value::Range(Box::new(Range { start, end })))
-}
-
-pub type ProgramFnRes = Result<Value, String>;
-pub type ProgramFn = fn(&mut [Value]) -> ProgramFnRes;
-
+#[allow(dead_code)]
 pub struct Program {
     block: Rc<Vec<AstNode>>,
     tokens: Vec<Token>,
@@ -309,22 +16,13 @@ pub struct Program {
     builtins: HashMap<String, ProgramFn>,
 }
 
+#[allow(dead_code)]
 impl Program {
     pub fn new(block: Vec<AstNode>, tokens: Vec<Token>) -> Self {
-        let builtins: [(_, ProgramFn); _] = [
-            ("print", builtin_print),
-            ("readfile", builtin_readfile),
-            ("split", builtin_split),
-            ("parseint", builtin_parseint),
-            ("substr", builtin_substr),
-            ("len", builtin_len),
-            ("get", builtin_get),
-            ("set", builtin_set),
-            ("mod", builtin_mod),
-            ("range", builtin_range),
-        ];
         let builtins = HashMap::<String, ProgramFn>::from_iter(
-            builtins.map(|(name, func)| (name.to_owned(), func)),
+            get_builtins()
+                .iter()
+                .map(|(name, func)| (name.to_string(), *func)),
         );
 
         Program {
@@ -515,7 +213,7 @@ impl Program {
                         ),
                     };
                 }
-                AstNodeKind::IfExpression(condition, block, else_block) => {
+                AstNodeKind::IfStatement(condition, block, else_block) => {
                     let cond_value = self.compute_expression(condition);
                     let cond_true = match cond_value {
                         Value::Integer(i) => i != 0,
