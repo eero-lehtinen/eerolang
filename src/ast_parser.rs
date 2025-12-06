@@ -2,7 +2,7 @@ use std::iter::Peekable;
 
 use log::trace;
 
-use crate::tokenizer::{Operator, Token, TokenKind, Value};
+use crate::tokenizer::{Operator, Token, TokenKind, Value, report_source_pos};
 
 #[derive(Debug)]
 pub enum AstNode {
@@ -41,7 +41,7 @@ fn parse_list<'a, I: TokIter<'a>>(
             iter.next();
             break;
         } else {
-            panic!("Expected ',' or ']/)' in list");
+            fatal("Expected ',' or closing token in list", next.unwrap());
         }
     }
     elements
@@ -59,7 +59,7 @@ fn parse_function_call<'a, I: TokIter<'a>>(ident: &str, iter: &mut Peekable<I>) 
 
 fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
     if !iter.next().is_some_and(|t| t.kind == TokenKind::LBrace) {
-        panic!("Expected '{{' at start of block");
+        fatal("Expected '{' at start of block", iter.peek().unwrap());
     }
     let mut block = Vec::new();
     while let Some(token) = iter.peek().cloned() {
@@ -71,7 +71,7 @@ fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
         if let Some(node) = stmt {
             block.push(node);
         } else {
-            panic!("Unexpected token in block: {:?}", token);
+            fatal("Unexpected token in block", token);
         }
     }
     block
@@ -81,7 +81,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let mut token = iter.next().unwrap();
     trace!("Parsing for loop, first token: {:?}", token);
     let TokenKind::Ident(index_var) = &token.kind else {
-        panic!("Expected identifier after 'for', found: {:?}", token);
+        fatal("Expected identifier after 'for'", token);
     };
     token = iter.next().unwrap();
     trace!("Parsing for loop, second token: {:?}", token);
@@ -89,10 +89,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
         token = iter.next().unwrap();
         trace!("Parsing for loop, item variable token: {:?}", token);
         let TokenKind::Ident(item_var) = &token.kind else {
-            panic!(
-                "Expected identifier after for comma variable, found: {:?}",
-                token
-            );
+            fatal("Expected identifier after comma in for loop", token);
         };
         token = iter.next().unwrap();
         Some(item_var.clone())
@@ -100,10 +97,14 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
         None
     };
     if token.kind != TokenKind::KeywordIn {
-        panic!("Expected 'in' after item variable, found: {:?}", token);
+        fatal("Expected 'in' after item variable in for loop", token);
     }
-    let collection_expr = parse_expression(iter)
-        .expect("Failed to parse collection expression after 'in' in for loop");
+    let collection_expr = parse_expression(iter).unwrap_or_else(|| {
+        fatal(
+            "Expected collection expression after 'in' in for loop",
+            iter.peek().unwrap(),
+        );
+    });
 
     let body = parse_block(iter);
 
@@ -133,8 +134,9 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
     match &token.kind {
         TokenKind::Operator(Operator::Minus) => {
             iter.next();
-            let expr =
-                parse_primary_expression(iter).expect("Expected expression after unary minus");
+            let expr = parse_primary_expression(iter).unwrap_or_else(|| {
+                fatal("Expected expression after '-'", iter.peek().unwrap());
+            });
             Some(AstNode::BinaryOp(
                 Box::new(AstNode::Literal(Value::Integer(0))),
                 Operator::Minus,
@@ -156,10 +158,12 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
         }
         TokenKind::LParen => {
             iter.next();
-            let expr = parse_expression(iter).unwrap();
+            let expr = parse_expression(iter).unwrap_or_else(|| {
+                fatal("Expected expression after '('", iter.peek().unwrap());
+            });
             let next = iter.peek().unwrap();
             if next.kind != TokenKind::RParen {
-                panic!("Expected closing parenthesis, found: {:?}", next);
+                fatal("Expected closing parenthesis", next);
             }
             iter.next();
             Some(expr)
@@ -191,8 +195,9 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
             break;
         }
         iter.next();
-        let mut right =
-            parse_primary_expression(iter).expect("Expected an expression after operator");
+        let mut right = parse_primary_expression(iter).unwrap_or_else(|| {
+            fatal("Expected expression after operator", iter.peek().unwrap());
+        });
 
         trace!(
             "Parsed right-hand side expression: {:?} after op, {:?}",
@@ -203,8 +208,10 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
             && let TokenKind::Operator(next_op) = next_tok.kind
         {
             if next_op.precedence() > op.precedence() {
-                right = parse_expression_impl(iter, right, next_op.precedence())
-                    .expect("Expected expression after operator");
+                right =
+                    parse_expression_impl(iter, right, next_op.precedence()).unwrap_or_else(|| {
+                        fatal("Expected expression after operator", iter.peek().unwrap());
+                    });
                 trace!(
                     "Updated right-hand side expression to: {:?} after parsing higher precedence op {:?}",
                     right, next_op
@@ -233,10 +240,10 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
                     let expr = parse_expression(iter).unwrap();
                     AstNode::Assign(ident.clone(), Box::new(expr))
                 }
-                t => {
+                _ => {
                     trace!("Parsing function call starting with identifier {}", ident);
                     parse_function_call(ident, iter).unwrap_or_else(|| {
-                        panic!("Unexpected token after identifier '{}': {:?}", ident, t)
+                        fatal("Unexpected token after ident", iter.peek().unwrap());
                     })
                 }
             }
@@ -254,6 +261,18 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
     Some(statement)
 }
 
+pub fn fatal(msg: &str, token: &Token) -> ! {
+    eprintln!(
+        "{} at token '{}', line {}, column {}",
+        msg,
+        token.text,
+        token.line + 1,
+        token.column + 1,
+    );
+    report_source_pos(token.line, token.column);
+    panic!("Parsing failed");
+}
+
 pub fn parse(tokens: &[Token]) -> Vec<AstNode> {
     let mut iter = tokens.iter().peekable();
 
@@ -269,9 +288,9 @@ pub fn parse(tokens: &[Token]) -> Vec<AstNode> {
     }
 
     if iter.peek().is_some() {
-        panic!(
-            "Unexpected tokens remaining after parsing: {:?}",
-            iter.collect::<Vec<_>>()
+        fatal(
+            "Unexpected token after end of program",
+            iter.peek().unwrap(),
         );
     }
 

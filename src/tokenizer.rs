@@ -2,6 +2,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use log::trace;
 
+use crate::SOURCE;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Assign,
@@ -67,9 +69,8 @@ pub enum Value {
     Range(i64, i64),
 }
 
-fn report_source_pos(source: &str, row: usize, col: usize, err: &str) {
-    eprintln!("{} at line {}, column {}:", err, row + 1, col);
-    for (i, src_line) in source.lines().enumerate() {
+pub fn report_source_pos(row: usize, col: usize) {
+    for (i, src_line) in SOURCE.get().unwrap().lines().enumerate() {
         if (i as i64 - row as i64).abs() <= 2 {
             eprintln!("{:4} | {}", i + 1, src_line);
         }
@@ -89,7 +90,8 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
     macro_rules! panic_with_pos {
         ($msg:expr) => {
             let col = iter.peek().map_or(0, |(i, _)| i - row_start);
-            report_source_pos(source, row, col, &$msg);
+            eprintln!("{} at line {}, column {}:", &$msg, row + 1, col + 1);
+            report_source_pos(row, col);
             panic!("Tokenization failed");
         };
     }
@@ -227,6 +229,16 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                     } else {
                         break;
                     }
+                }
+                if iter
+                    .peek()
+                    .is_some_and(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
+                {
+                    panic_with_pos!(format!(
+                        "Invalid numeric literal: '{}{}'",
+                        &source[i..j],
+                        iter.peek().unwrap().1
+                    ));
                 }
                 let data = &source[i..j];
                 if is_float {

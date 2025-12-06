@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::OnceLock, time::Instant};
 
 use log::error;
 
@@ -7,6 +7,8 @@ use crate::program::Program;
 mod ast_parser;
 mod program;
 mod tokenizer;
+
+static SOURCE: OnceLock<String> = OnceLock::new();
 
 fn main() {
     env_logger::builder().format_timestamp(None).init();
@@ -19,6 +21,7 @@ fn main() {
 
     let source_file = &args[1];
     let source_code = std::fs::read_to_string(source_file).expect("Failed to read source file");
+    SOURCE.set(source_code.clone()).unwrap();
 
     let tok_start = Instant::now();
     let tokens = tokenizer::tokenize(&source_code);
