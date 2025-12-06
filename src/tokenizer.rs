@@ -143,7 +143,7 @@ pub fn report_source_pos(row: usize, char_col: usize) {
             eprintln!("{:4} | {}", i + 1, src_line);
         }
         if i == row {
-            eprintln!("       {}^", " ".repeat(char_col.saturating_sub(1)));
+            eprintln!("       {}^", " ".repeat(char_col));
         }
     }
 }
@@ -166,9 +166,9 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
     }
 
     macro_rules! update_row {
-        ($i:expr, $ch:expr) => {
+        ($i:expr) => {
             row += 1;
-            byte_row_start = $i + $ch.len_utf8();
+            byte_row_start = $i + 1;
         };
     }
 
@@ -234,7 +234,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
             '#' => {
                 for (i, next_ch) in iter.by_ref() {
                     if next_ch == '\n' {
-                        update_row!(i, next_ch);
+                        update_row!(i);
                         break;
                     }
                 }
@@ -326,7 +326,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                 }
             }
             '\n' => {
-                update_row!(byte_pos, ch);
+                update_row!(byte_pos);
             }
             ch if ch.is_whitespace() => {}
             _ => {

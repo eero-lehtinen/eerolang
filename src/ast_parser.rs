@@ -76,9 +76,12 @@ fn parse_function_call<'a, I: TokIter<'a>>(
 }
 
 fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
-    if !iter.next().is_some_and(|t| t.kind == TokenKind::LBrace) {
+    let lbrace_token = iter.peek();
+    if !lbrace_token.is_some_and(|t| t.kind == TokenKind::LBrace) {
         fatal("Expected '{' at start of block", iter.peek().unwrap());
     }
+    iter.next();
+
     let mut block = Vec::new();
     while let Some(token) = iter.peek().cloned() {
         if token.kind == TokenKind::RBrace {
