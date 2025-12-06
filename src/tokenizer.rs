@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use log::trace;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token {
+pub enum TokenKind {
     Assign,
     Operator(Operator),
     LParen,
@@ -19,6 +19,14 @@ pub enum Token {
     KeywordIn,
     KeywordIf,
     KeywordElse,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Token<'a> {
+    pub line: usize,
+    pub column: usize,
+    pub text: &'a str,
+    pub kind: TokenKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,68 +67,108 @@ pub enum Value {
     Range(i64, i64),
 }
 
-pub fn tokenize(source: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut iter = source.chars().peekable();
+fn report_source_pos(source: &str, row: usize, col: usize, err: &str) {
+    eprintln!("{} at line {}, column {}:", err, row + 1, col);
+    for (i, src_line) in source.lines().enumerate() {
+        if (i as i64 - row as i64).abs() <= 2 {
+            eprintln!("{:4} | {}", i + 1, src_line);
+        }
+        if i == row {
+            eprintln!("       {}^", " ".repeat(col.saturating_sub(1)));
+        }
+    }
+}
 
+pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
+    let mut tokens = Vec::new();
+    let mut iter = source.chars().enumerate().peekable();
     let mut tbuf = String::new();
-    while let Some(ch) = iter.next() {
+    let mut row = 0;
+    let mut row_start = 0;
+
+    macro_rules! panic_with_pos {
+        ($msg:expr) => {
+            let col = iter.peek().map_or(0, |(i, _)| i - row_start);
+            report_source_pos(source, row, col, &$msg);
+            panic!("Tokenization failed");
+        };
+    }
+
+    macro_rules! update_row {
+        ($i:expr) => {
+            row += 1;
+            row_start = $i + 1;
+        };
+    }
+
+    while let Some((i, ch)) = iter.next() {
+        macro_rules! tok {
+            ($text:expr, $kind:expr) => {
+                tokens.push(Token {
+                    line: row,
+                    column: i - row_start,
+                    text: $text,
+                    kind: $kind,
+                })
+            };
+        }
+
         match ch {
-            '+' => tokens.push(Token::Operator(Operator::Plus)),
-            '-' => tokens.push(Token::Operator(Operator::Minus)),
-            '*' => tokens.push(Token::Operator(Operator::Multiply)),
-            '/' => tokens.push(Token::Operator(Operator::Divide)),
+            '+' => tok!("+", TokenKind::Operator(Operator::Plus)),
+            '-' => tok!("-", TokenKind::Operator(Operator::Minus)),
+            '*' => tok!("*", TokenKind::Operator(Operator::Multiply)),
+            '/' => tok!("/", TokenKind::Operator(Operator::Divide)),
             '<' => {
-                if iter.peek() == Some(&'=') {
+                if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tokens.push(Token::Operator(Operator::Lte));
+                    tok!("<=", TokenKind::Operator(Operator::Lte));
                 } else {
-                    tokens.push(Token::Operator(Operator::Lt));
+                    tok!("<", TokenKind::Operator(Operator::Lt));
                 }
             }
             '>' => {
-                if iter.peek() == Some(&'=') {
+                if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tokens.push(Token::Operator(Operator::Gte));
+                    tok!(">=", TokenKind::Operator(Operator::Gte));
                 } else {
-                    tokens.push(Token::Operator(Operator::Gt));
+                    tok!(">", TokenKind::Operator(Operator::Gt));
                 }
             }
             '!' => {
-                if iter.peek() == Some(&'=') {
+                if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tokens.push(Token::Operator(Operator::Neq));
+                    tok!("!=", TokenKind::Operator(Operator::Neq));
                 } else {
                     panic!("Unexpected character: !");
                 }
             }
             '=' => {
-                if iter.peek() == Some(&'=') {
+                if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tokens.push(Token::Operator(Operator::Eq));
+                    tok!("==", TokenKind::Operator(Operator::Eq));
                 } else {
-                    tokens.push(Token::Assign);
+                    tok!("=", TokenKind::Assign);
                 }
             }
-            '(' => tokens.push(Token::LParen),
-            ')' => tokens.push(Token::RParen),
-            '[' => tokens.push(Token::LSquareParen),
-            ']' => tokens.push(Token::RSquareParen),
-            '{' => tokens.push(Token::LBrace),
-            '}' => tokens.push(Token::RBrace),
-            ',' => tokens.push(Token::Comma),
+            '(' => tok!("(", TokenKind::LParen),
+            ')' => tok!(")", TokenKind::RParen),
+            '[' => tok!("[", TokenKind::LSquareParen),
+            ']' => tok!("]", TokenKind::RSquareParen),
+            '{' => tok!("{", TokenKind::LBrace),
+            '}' => tok!("}", TokenKind::RBrace),
+            ',' => tok!(",", TokenKind::Comma),
             '#' => {
-                while let Some(&next_ch) = iter.peek() {
+                for (i, next_ch) in iter.by_ref() {
                     if next_ch == '\n' {
+                        update_row!(i);
                         break;
                     }
-                    iter.next();
                 }
             }
             '"' => {
                 tbuf.clear();
                 let mut escape = false;
-                for next_ch in iter.by_ref() {
+                for (_, next_ch) in iter.by_ref() {
                     if next_ch == '\\' && !escape {
                         escape = true;
                         continue;
@@ -142,59 +190,64 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                     }
                     escape = false;
                 }
-                tokens.push(Token::Literal(Value::String(tbuf.clone().into())));
+                tok!(
+                    &source[i..i + tbuf.len() + 1],
+                    TokenKind::Literal(Value::String(tbuf.clone().into()))
+                );
                 tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
-                tbuf.push(ch);
-                while let Some(&next_ch) = iter.peek() {
+                let mut j = i;
+                while let Some(&(_, next_ch)) = iter.peek() {
+                    j += 1;
                     if next_ch.is_alphanumeric() || next_ch == '_' {
-                        tbuf.push(next_ch);
                         iter.next();
                     } else {
                         break;
                     }
                 }
-                match tbuf.as_str() {
-                    "for" => tokens.push(Token::KeywordFor),
-                    "in" => tokens.push(Token::KeywordIn),
-                    "if" => tokens.push(Token::KeywordIf),
-                    "else" => tokens.push(Token::KeywordElse),
-                    _ => tokens.push(Token::Ident(tbuf.clone())),
+                match &source[i..j] {
+                    "for" => tok!("for", TokenKind::KeywordFor),
+                    "in" => tok!("in", TokenKind::KeywordIn),
+                    "if" => tok!("if", TokenKind::KeywordIf),
+                    "else" => tok!("else", TokenKind::KeywordElse),
+                    ident => tok!(ident, TokenKind::Ident(ident.to_string())),
                 }
-                tbuf.clear();
             }
             ch if ch.is_ascii_digit() => {
-                tbuf.push(ch);
+                let mut j = i;
                 let mut is_float = false;
-                while let Some(&next_ch) = iter.peek() {
+                while let Some(&(_, next_ch)) = iter.peek() {
+                    j += 1;
                     if next_ch.is_ascii_digit() {
-                        tbuf.push(next_ch);
                         iter.next();
                     } else if next_ch == '.' && !is_float {
                         is_float = true;
-                        tbuf.push(next_ch);
                         iter.next();
                     } else {
                         break;
                     }
                 }
+                let data = &source[i..j];
                 if is_float {
-                    if let Ok(float_val) = tbuf.parse::<f64>() {
-                        tokens.push(Token::Literal(Value::Float(float_val)));
+                    if let Ok(float_val) = data.parse::<f64>() {
+                        tok!(data, TokenKind::Literal(Value::Float(float_val)));
                     } else {
-                        panic!("Invalid float literal: {}", tbuf);
+                        panic_with_pos!(format!("Invalid float literal: '{}'", data));
                     }
-                } else if let Ok(int_val) = tbuf.parse::<i64>() {
-                    tokens.push(Token::Literal(Value::Integer(int_val)));
+                } else if let Ok(int_val) = data.parse::<i64>() {
+                    tok!(data, TokenKind::Literal(Value::Integer(int_val)));
                 } else {
-                    panic!("Invalid integer literal: {}", tbuf);
+                    panic_with_pos!(format!("Invalid integer literal: '{}'", data));
                 }
-                tbuf.clear();
             }
-            ch if ch.is_whitespace() => {}
+            ch if ch.is_whitespace() => {
+                if ch == '\n' {
+                    update_row!(i);
+                }
+            }
             _ => {
-                panic!("Unexpected character: {}", ch);
+                panic_with_pos!(format!("Unexpected character: {}", ch));
             }
         }
     }

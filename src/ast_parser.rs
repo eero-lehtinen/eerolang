@@ -2,7 +2,7 @@ use std::iter::Peekable;
 
 use log::trace;
 
-use crate::tokenizer::{Operator, Token, Value};
+use crate::tokenizer::{Operator, Token, TokenKind, Value};
 
 #[derive(Debug)]
 pub enum AstNode {
@@ -17,27 +17,27 @@ pub enum AstNode {
     Variable(String),
 }
 
-trait TokIter<'a>: Iterator<Item = &'a Token> + Clone {}
-impl<'a, T: Iterator<Item = &'a Token> + Clone> TokIter<'a> for T {}
+trait TokIter<'a>: Iterator<Item = &'a Token<'a>> + Clone {}
+impl<'a, T: Iterator<Item = &'a Token<'a>> + Clone> TokIter<'a> for T {}
 
 fn parse_list<'a, I: TokIter<'a>>(
     iter: &mut Peekable<I>,
-    separator: Token,
-    end_token: Token,
+    separator: TokenKind,
+    end_token: TokenKind,
 ) -> Vec<AstNode> {
     let mut elements = Vec::new();
     loop {
         let next = iter.peek();
-        if next == Some(&&end_token) {
+        if next.is_some_and(|t| t.kind == end_token) {
             iter.next();
             break;
         }
         let element = parse_expression(iter).unwrap();
         elements.push(element);
         let next = iter.peek();
-        if next == Some(&&separator) {
+        if next.is_some_and(|t| t.kind == separator) {
             iter.next();
-        } else if next == Some(&&end_token) {
+        } else if next.is_some_and(|t| t.kind == end_token) {
             iter.next();
             break;
         } else {
@@ -49,21 +49,21 @@ fn parse_list<'a, I: TokIter<'a>>(
 
 fn parse_function_call<'a, I: TokIter<'a>>(ident: &str, iter: &mut Peekable<I>) -> Option<AstNode> {
     let next = iter.peek();
-    let Some(Token::LParen) = next else {
+    if !next.is_some_and(|t| t.kind == TokenKind::LParen) {
         return None;
     };
     iter.next();
-    let args = parse_list(iter, Token::Comma, Token::RParen);
+    let args = parse_list(iter, TokenKind::Comma, TokenKind::RParen);
     Some(AstNode::FunctionCall(ident.to_owned(), args))
 }
 
 fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
-    if iter.next() != Some(&Token::LBrace) {
+    if !iter.next().is_some_and(|t| t.kind == TokenKind::LBrace) {
         panic!("Expected '{{' at start of block");
     }
     let mut block = Vec::new();
     while let Some(token) = iter.peek().cloned() {
-        if *token == Token::RBrace {
+        if token.kind == TokenKind::RBrace {
             iter.next();
             break;
         }
@@ -80,15 +80,15 @@ fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
 fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let mut token = iter.next().unwrap();
     trace!("Parsing for loop, first token: {:?}", token);
-    let Token::Ident(index_var) = token else {
+    let TokenKind::Ident(index_var) = &token.kind else {
         panic!("Expected identifier after 'for', found: {:?}", token);
     };
     token = iter.next().unwrap();
     trace!("Parsing for loop, second token: {:?}", token);
-    let item_var = if token == &Token::Comma {
+    let item_var = if token.kind == TokenKind::Comma {
         token = iter.next().unwrap();
         trace!("Parsing for loop, item variable token: {:?}", token);
-        let Token::Ident(item_var) = token else {
+        let TokenKind::Ident(item_var) = &token.kind else {
             panic!(
                 "Expected identifier after for comma variable, found: {:?}",
                 token
@@ -99,7 +99,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     } else {
         None
     };
-    if token != &Token::KeywordIn {
+    if token.kind != TokenKind::KeywordIn {
         panic!("Expected 'in' after item variable, found: {:?}", token);
     }
     let collection_expr = parse_expression(iter)
@@ -120,7 +120,7 @@ fn parse_if_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let block = parse_block(iter);
     let token = iter.peek();
     let mut else_block = Vec::new();
-    if token == Some(&&Token::KeywordElse) {
+    if token.is_some_and(|t| t.kind == TokenKind::KeywordElse) {
         iter.next();
         else_block = parse_block(iter);
     }
@@ -130,8 +130,8 @@ fn parse_if_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
 fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode> {
     let token = iter.peek()?;
 
-    match token {
-        Token::Operator(Operator::Minus) => {
+    match &token.kind {
+        TokenKind::Operator(Operator::Minus) => {
             iter.next();
             let expr =
                 parse_primary_expression(iter).expect("Expected expression after unary minus");
@@ -141,11 +141,11 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                 Box::new(expr),
             ))
         }
-        Token::Literal(lit) => {
+        TokenKind::Literal(lit) => {
             iter.next();
             Some(AstNode::Literal(lit.clone()))
         }
-        Token::Ident(ident) => {
+        TokenKind::Ident(ident) => {
             iter.next();
             trace!("Parsing identifier: {}", ident);
             if let Some(fcall) = parse_function_call(ident, iter) {
@@ -154,19 +154,19 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                 Some(AstNode::Variable(ident.clone()))
             }
         }
-        Token::LParen => {
+        TokenKind::LParen => {
             iter.next();
             let expr = parse_expression(iter).unwrap();
             let next = iter.peek().unwrap();
-            if next != &&Token::RParen {
+            if next.kind != TokenKind::RParen {
                 panic!("Expected closing parenthesis, found: {:?}", next);
             }
             iter.next();
             Some(expr)
         }
-        Token::LSquareParen => {
+        TokenKind::LSquareParen => {
             iter.next();
-            let elements = parse_list(iter, Token::Comma, Token::RSquareParen);
+            let elements = parse_list(iter, TokenKind::Comma, TokenKind::RSquareParen);
             Some(AstNode::List(elements))
         }
         _ => None,
@@ -184,11 +184,12 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
     mut left: AstNode,
     min_precedence: u8,
 ) -> Option<AstNode> {
-    while let Some(Token::Operator(op)) = iter.peek() {
+    while let Some(tok) = iter.peek()
+        && let TokenKind::Operator(op) = tok.kind
+    {
         if op.precedence() < min_precedence {
             break;
         }
-        let op = *op;
         iter.next();
         let mut right =
             parse_primary_expression(iter).expect("Expected an expression after operator");
@@ -198,7 +199,9 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
             right, op
         );
 
-        while let Some(Token::Operator(next_op)) = iter.peek() {
+        while let Some(next_tok) = iter.peek()
+            && let TokenKind::Operator(next_op) = next_tok.kind
+        {
             if next_op.precedence() > op.precedence() {
                 right = parse_expression_impl(iter, right, next_op.precedence())
                     .expect("Expected expression after operator");
@@ -220,11 +223,11 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
 fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode> {
     let token = iter.peek()?;
 
-    let statement = match token {
-        Token::Ident(ident) => {
+    let statement = match &token.kind {
+        TokenKind::Ident(ident) => {
             iter.next();
-            match *iter.peek().unwrap() {
-                Token::Assign => {
+            match &iter.peek().unwrap().kind {
+                TokenKind::Assign => {
                     trace!("Parsing assignment to {}", ident);
                     iter.next();
                     let expr = parse_expression(iter).unwrap();
@@ -238,11 +241,11 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
                 }
             }
         }
-        Token::KeywordFor => {
+        TokenKind::KeywordFor => {
             iter.next();
             parse_for_loop(iter)
         }
-        Token::KeywordIf => {
+        TokenKind::KeywordIf => {
             iter.next();
             parse_if_expression(iter)
         }
