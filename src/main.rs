@@ -1,0 +1,45 @@
+use std::time::Instant;
+
+use log::error;
+
+use crate::program::Program;
+
+mod ast_parser;
+mod program;
+mod tokenizer;
+
+fn main() {
+    env_logger::builder().format_timestamp(None).init();
+
+    let args = std::env::args().collect::<Vec<String>>();
+    if args.len() < 2 {
+        error!("Usage: {} <source_file>", args[0]);
+        return;
+    }
+
+    let source_file = &args[1];
+    let source_code = std::fs::read_to_string(source_file).expect("Failed to read source file");
+
+    let tok_start = Instant::now();
+    let tokens = tokenizer::tokenize(&source_code);
+    let tok_end = Instant::now();
+    // for token in &tokens {
+    //     println!("{:?}", token);
+    // }
+
+    let parse_start = Instant::now();
+    let block = ast_parser::parse(&tokens);
+    let parse_end = Instant::now();
+
+    let exec_start = Instant::now();
+    let mut program = Program::new(block);
+    program.execute();
+    let exec_end = Instant::now();
+
+    println!(
+        "tokenized in {:?}, parsed in {:?}, executed in {:?}",
+        tok_end - tok_start,
+        parse_end - parse_start,
+        exec_end - exec_start
+    );
+}
