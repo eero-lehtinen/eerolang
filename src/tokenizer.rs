@@ -24,10 +24,12 @@ pub enum TokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token<'a> {
+pub struct Token {
     pub line: usize,
     pub byte_col: usize,
-    pub text: &'a str,
+    pub byte_pos_start: usize,
+    pub byte_pos_end: usize,
+    pub index: usize,
     pub kind: TokenKind,
 }
 
@@ -69,6 +71,46 @@ pub enum Value {
     Range(Box<Range>),
 }
 
+pub fn dbg_display(values: &[Value]) -> String {
+    if values.is_empty() {
+        "[]".to_string()
+    } else {
+        let items = values
+            .iter()
+            .take(3)
+            .map(|item| item.dbg_display())
+            .collect::<Vec<String>>()
+            .join(", ");
+        if values.len() > 3 {
+            format!("[{}, ...]", items)
+        } else {
+            format!("[{}]", items)
+        }
+    }
+}
+
+impl Value {
+    pub fn dbg_display(&self) -> String {
+        match self {
+            Value::Integer(i) => format!("(int {})", i),
+            Value::Float(f) => format!("(float {})", f),
+            Value::String(s) => {
+                let s = if s.len() <= 6 {
+                    s.to_string()
+                } else {
+                    format!("{}...", &s[..6])
+                };
+                let s = s.replace("\n", "\\n");
+                format!("(string \"{}\")", s)
+            }
+            Value::List(v) => {
+                format!("(list {})", dbg_display(&v.borrow()))
+            }
+            Value::Range(r) => format!("(range {}, {})", r.start, r.end),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Range {
     pub start: i64,
@@ -106,7 +148,7 @@ pub fn report_source_pos(row: usize, char_col: usize) {
     }
 }
 
-pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
+pub fn tokenize(source: &'_ str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut iter = source.char_indices().peekable();
     let mut tbuf = String::new();
@@ -132,41 +174,44 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
 
     while let Some((byte_pos, ch)) = iter.next() {
         macro_rules! tok {
-            ($text:expr, $kind:expr) => {
+            ($len:expr, $kind:expr) => {{
+                let index = tokens.len();
                 tokens.push(Token {
                     line: row,
                     byte_col: byte_pos - byte_row_start,
-                    text: $text,
+                    byte_pos_start: byte_pos,
+                    byte_pos_end: byte_pos + $len,
+                    index,
                     kind: $kind,
-                })
-            };
+                });
+            }};
         }
 
         match ch {
-            '+' => tok!("+", TokenKind::Operator(Operator::Plus)),
-            '-' => tok!("-", TokenKind::Operator(Operator::Minus)),
-            '*' => tok!("*", TokenKind::Operator(Operator::Multiply)),
-            '/' => tok!("/", TokenKind::Operator(Operator::Divide)),
+            '+' => tok!(1, TokenKind::Operator(Operator::Plus)),
+            '-' => tok!(1, TokenKind::Operator(Operator::Minus)),
+            '*' => tok!(1, TokenKind::Operator(Operator::Multiply)),
+            '/' => tok!(1, TokenKind::Operator(Operator::Divide)),
             '<' => {
                 if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tok!("<=", TokenKind::Operator(Operator::Lte));
+                    tok!(2, TokenKind::Operator(Operator::Lte));
                 } else {
-                    tok!("<", TokenKind::Operator(Operator::Lt));
+                    tok!(1, TokenKind::Operator(Operator::Lt));
                 }
             }
             '>' => {
                 if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tok!(">=", TokenKind::Operator(Operator::Gte));
+                    tok!(2, TokenKind::Operator(Operator::Gte));
                 } else {
-                    tok!(">", TokenKind::Operator(Operator::Gt));
+                    tok!(1, TokenKind::Operator(Operator::Gt));
                 }
             }
             '!' => {
                 if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tok!("!=", TokenKind::Operator(Operator::Neq));
+                    tok!(2, TokenKind::Operator(Operator::Neq));
                 } else {
                     panic!("Unexpected character: !");
                 }
@@ -174,18 +219,18 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
             '=' => {
                 if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();
-                    tok!("==", TokenKind::Operator(Operator::Eq));
+                    tok!(2, TokenKind::Operator(Operator::Eq));
                 } else {
-                    tok!("=", TokenKind::Assign);
+                    tok!(1, TokenKind::Assign);
                 }
             }
-            '(' => tok!("(", TokenKind::LParen),
-            ')' => tok!(")", TokenKind::RParen),
-            '[' => tok!("[", TokenKind::LSquareParen),
-            ']' => tok!("]", TokenKind::RSquareParen),
-            '{' => tok!("{", TokenKind::LBrace),
-            '}' => tok!("}", TokenKind::RBrace),
-            ',' => tok!(",", TokenKind::Comma),
+            '(' => tok!(1, TokenKind::LParen),
+            ')' => tok!(1, TokenKind::RParen),
+            '[' => tok!(1, TokenKind::LSquareParen),
+            ']' => tok!(1, TokenKind::RSquareParen),
+            '{' => tok!(1, TokenKind::LBrace),
+            '}' => tok!(1, TokenKind::RBrace),
+            ',' => tok!(1, TokenKind::Comma),
             '#' => {
                 for (i, next_ch) in iter.by_ref() {
                     if next_ch == '\n' {
@@ -220,7 +265,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                     escape = false;
                 }
                 tok!(
-                    &source[byte_pos..byte_pos + tbuf.len() + 1],
+                    tbuf.len(),
                     TokenKind::Literal(Value::String(tbuf.clone().into()))
                 );
                 tbuf.clear();
@@ -236,11 +281,11 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                     }
                 }
                 match &source[byte_pos..byte_end_pos] {
-                    "for" => tok!("for", TokenKind::KeywordFor),
-                    "in" => tok!("in", TokenKind::KeywordIn),
-                    "if" => tok!("if", TokenKind::KeywordIf),
-                    "else" => tok!("else", TokenKind::KeywordElse),
-                    ident => tok!(ident, TokenKind::Ident(ident.to_string())),
+                    "for" => tok!("for".len(), TokenKind::KeywordFor),
+                    "in" => tok!("in".len(), TokenKind::KeywordIn),
+                    "if" => tok!("if".len(), TokenKind::KeywordIf),
+                    "else" => tok!("else".len(), TokenKind::KeywordElse),
+                    ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }
             ch if ch.is_ascii_digit() => {
@@ -270,12 +315,12 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                 let data = &source[byte_pos..byte_end_pos];
                 if is_float {
                     if let Ok(float_val) = data.parse::<f64>() {
-                        tok!(data, TokenKind::Literal(Value::Float(float_val)));
+                        tok!(data.len(), TokenKind::Literal(Value::Float(float_val)));
                     } else {
                         panic_with_pos!(format!("Invalid float literal: '{}'", data));
                     }
                 } else if let Ok(int_val) = data.parse::<i64>() {
-                    tok!(data, TokenKind::Literal(Value::Integer(int_val)));
+                    tok!(data.len(), TokenKind::Literal(Value::Integer(int_val)));
                 } else {
                     panic_with_pos!(format!("Invalid integer literal: '{}'", data));
                 }

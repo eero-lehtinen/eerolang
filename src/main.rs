@@ -35,7 +35,7 @@ fn main() {
     let parse_end = Instant::now();
 
     let exec_start = Instant::now();
-    let mut program = Program::new(block);
+    let mut program = Program::new(block, tokens);
     program.execute();
     let exec_end = Instant::now();
 

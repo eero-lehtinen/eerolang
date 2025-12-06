@@ -1,14 +1,16 @@
 use foldhash::{HashMap, HashMapExt};
 use std::{cell::RefCell, io::Write, rc::Rc};
 
-use log::trace;
-
 use crate::{
-    ast_parser::AstNode,
-    tokenizer::{Operator, Range, Value},
+    ast_parser::{AstNode, AstNodeKind, fatal_generic},
+    tokenizer::{Operator, Range, Token, Value, dbg_display},
 };
 
-fn builtin_print(args: &mut [Value]) -> Option<Value> {
+fn fn_ok() -> ProgramFnRes {
+    Ok(Value::Integer(1))
+}
+
+fn builtin_print(args: &mut [Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
     for (i, arg) in args.iter().enumerate() {
         match arg {
@@ -26,7 +28,7 @@ fn builtin_print(args: &mut [Value]) -> Option<Value> {
                         Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
                         Value::String(ss) => write!(&mut w, "\"{}\"", ss).unwrap(),
                         Value::List(_) => write!(&mut w, "<nested list>").unwrap(),
-                        Value::Range(r) => write!(&mut w, "{}..{}", r.start, r.end).unwrap(),
+                        Value::Range(r) => write!(&mut w, "(range {},{})", r.start, r.end).unwrap(),
                     }
                     if j < l.borrow().len() - 1 {
                         print!(", ");
@@ -41,70 +43,92 @@ fn builtin_print(args: &mut [Value]) -> Option<Value> {
     }
     writeln!(&mut w).unwrap();
     w.flush().unwrap();
-    None
+    fn_ok()
 }
 
-fn builtin_readfile(args: &mut [Value]) -> Option<Value> {
+fn builtin_readfile(args: &mut [Value]) -> ProgramFnRes {
     let [Value::String(filename)] = &args else {
-        panic!("readfile expects (string), got {:?}", args)
+        return Err(format!("Expects (string), got {}", dbg_display(args)));
     };
 
     let content = std::fs::read_to_string(filename.as_ref())
-        .unwrap_or_else(|_| panic!("Failed to read file: {}", filename));
+        .map_err(|_| format!("Failed to read file: {}", filename))?;
 
-    Some(Value::String(content.trim().into()))
+    Ok(Value::String(content.trim().into()))
 }
 
-fn builtin_split(args: &mut [Value]) -> Option<Value> {
+fn builtin_split(args: &mut [Value]) -> ProgramFnRes {
     let [Value::String(s), Value::String(delim)] = &args else {
-        panic!("split expects (string, string), got {:?}", args)
+        return Err(format!(
+            "Expects (string, string), got {}",
+            dbg_display(args)
+        ));
     };
-
-    trace!("Splitting string '{}' by delimiter '{}'", s, delim);
 
     let parts: Vec<Value> = s
         .split(delim.as_ref())
         .map(|part| Value::String(Rc::from(part)))
         .collect();
 
-    Some(Value::List(Rc::new(RefCell::new(parts))))
+    Ok(Value::List(Rc::new(RefCell::new(parts))))
 }
 
-fn builtin_parseint(args: &mut [Value]) -> Option<Value> {
+fn builtin_parseint(args: &mut [Value]) -> ProgramFnRes {
     let [Value::String(s)] = &args else {
-        panic!("parseint expects (string), got {:?}", args)
+        return Err(format!("Expects (string), got {}", dbg_display(args)));
     };
 
     let int_value = s
         .parse::<i64>()
-        .unwrap_or_else(|_| panic!("Failed to parse integer from string: {}", s));
+        .map_err(|_| format!("Failed to parse integer from string: {}", s))?;
 
-    Some(Value::Integer(int_value))
+    Ok(Value::Integer(int_value))
 }
 
-fn builtin_substr(args: &mut [Value]) -> Option<Value> {
+fn builtin_substr(args: &mut [Value]) -> ProgramFnRes {
     if args.len() < 2 || args.len() > 3 {
-        panic!("substr expects (string, int, opt int), got {:?}", args)
+        return Err(format!(
+            "Expects (string, int, opt int), got {}",
+            dbg_display(args)
+        ));
     }
     let string = match &args[0] {
         Value::String(s) => s,
-        _ => panic!("substr expects first argument to be string"),
+        _ => {
+            return Err(format!(
+                "Expects (string) as first argument, got {}",
+                args[0].dbg_display()
+            ));
+        }
     };
     let start = match &args[1] {
         Value::Integer(i) => *i,
-        _ => panic!("substr expects second argument to be integer"),
+        _ => {
+            return Err(format!(
+                "Expects (int) as second argument, got {}",
+                args[1].dbg_display()
+            ));
+        }
     };
     let mut end = if args.get(2).is_some() {
         match &args[2] {
             Value::Integer(i) => *i,
-            _ => panic!("substr expects third argument to be integer"),
+            _ => {
+                return Err(format!(
+                    "Expects (int) as third argument, got {}",
+                    args[2].dbg_display()
+                ));
+            }
         }
     } else {
         string.len() as i64
     };
 
     if start < 0 || start > end {
-        panic!("substr indices out of bounds");
+        return Err(format!(
+            "Expects start to be non-negative and less than end, got start: {}, end: {}",
+            start, end
+        ));
     }
     if end < 0 {
         end = string.len() as i64 - end.abs();
@@ -112,100 +136,149 @@ fn builtin_substr(args: &mut [Value]) -> Option<Value> {
     end = end.min(string.len() as i64);
 
     let substring = &string[start as usize..end as usize];
-    Some(Value::String(Rc::from(substring)))
+    Ok(Value::String(Rc::from(substring)))
 }
 
-fn builtin_set(args: &mut [Value]) -> Option<Value> {
+fn builtin_set(args: &mut [Value]) -> ProgramFnRes {
     let [target, index, value] = args else {
-        panic!("set expects (list, int, value), got {:?}", args)
+        return Err(format!(
+            "Expects (list, int, value), got {}",
+            dbg_display(args)
+        ));
     };
 
     let index = match &index {
         Value::Integer(i) => *i as usize,
-        _ => panic!("set expects second argument to be integer index"),
+        _ => {
+            return Err(format!(
+                "Expects (int) as second argument, got {}",
+                index.dbg_display()
+            ));
+        }
     };
 
     match target {
         Value::List(l) => {
             if index >= l.borrow().len() {
-                panic!("set index out of bounds");
+                return Err(format!(
+                    "Index out of bounds (length: {}, index: {})",
+                    l.borrow().len(),
+                    index
+                ));
             }
             l.borrow_mut()[index] = value.clone();
-            None
+            fn_ok()
         }
-        _ => panic!("set expects (list, int, value), got {:?}", args),
+        _ => Err(format!(
+            "Expects (list) as first argument, got {}",
+            target.dbg_display()
+        )),
     }
 }
 
-fn builtin_get(args: &mut [Value]) -> Option<Value> {
+fn builtin_get(args: &mut [Value]) -> ProgramFnRes {
     let [target, index] = args else {
-        panic!("get expects (list/string, int), got {:?}", args)
+        return Err(format!(
+            "Expects (list/string, int), got {}",
+            dbg_display(args)
+        ));
     };
 
     let index = match index {
         Value::Integer(i) => *i as usize,
-        _ => panic!("get expects (list/string, int), got {:?}", args),
+        _ => {
+            return Err(format!(
+                "Expects (int) as second argument, got {}",
+                index.dbg_display()
+            ));
+        }
     };
 
     match target {
         Value::List(l) => {
             if index >= l.borrow().len() {
-                panic!("get index out of bounds");
+                return Err(format!(
+                    "Index out of bounds (length: {}, index: {})",
+                    l.borrow().len(),
+                    index
+                ));
             }
-            Some(l.borrow()[index].clone())
+            Ok(l.borrow()[index].clone())
         }
         Value::String(s) => {
             if index >= s.len() {
-                panic!("get index out of bounds");
+                return Err(format!(
+                    "Index out of bounds (length: {}, index: {})",
+                    s.len(),
+                    index
+                ));
             }
-            Some(Value::String(Rc::from(
+            Ok(Value::String(Rc::from(
                 s.chars().nth(index).unwrap().to_string(),
             )))
         }
-        _ => panic!("get expects (list/string, int), got {:?}", args),
+        _ => Err(format!(
+            "Expects (list/string) as first argument, got {}",
+            target.dbg_display()
+        )),
     }
 }
 
-fn builtin_len(args: &mut [Value]) -> Option<Value> {
+fn builtin_len(args: &mut [Value]) -> ProgramFnRes {
     let [len] = args else {
-        panic!("len expects (list/string), got {:?}", args)
+        return Err(format!("Expects (list/string), got {}", dbg_display(args)));
     };
 
     let len = match &len {
         Value::String(s) => s.len() as i64,
         Value::List(l) => l.borrow().len() as i64,
-        _ => panic!("len expects (list/string), got {:?}", args),
+        _ => return Err(format!("Expects (list/string), got {}", len.dbg_display())),
     };
 
-    Some(Value::Integer(len))
+    Ok(Value::Integer(len))
 }
 
-fn builtin_mod(args: &mut [Value]) -> Option<Value> {
+fn builtin_mod(args: &mut [Value]) -> ProgramFnRes {
     let [a, b] = args else {
-        panic!("mod expects (int, int), got {:?}", args)
+        return Err(format!("Expects (int, int), got {}", dbg_display(args)));
     };
 
     let a = match a {
         Value::Integer(i) => *i,
-        _ => panic!("mod expects (int, int), got {:?}", args),
+        _ => {
+            return Err(format!(
+                "Expects (int) as first argument, got {}",
+                a.dbg_display()
+            ));
+        }
     };
 
     let b = match b {
         Value::Integer(i) => *i,
-        _ => panic!("mod expects (int, int), got {:?}", args),
+        _ => {
+            return Err(format!(
+                "Expects (int) as second argument, got {}",
+                b.dbg_display()
+            ));
+        }
     };
 
-    Some(Value::Integer(a % b))
+    Ok(Value::Integer(a % b))
 }
 
-fn builtin_range(args: &mut [Value]) -> Option<Value> {
+fn builtin_range(args: &mut [Value]) -> ProgramFnRes {
     if args.is_empty() || args.len() > 2 {
-        panic!("range expects (int, opt int), got {:?}", args)
+        return Err(format!("Expects (int, opt int), got {}", dbg_display(args)));
     };
 
     let mut start = match &args[0] {
         Value::Integer(i) => *i,
-        _ => panic!("range expects (int, opt int), got {:?}", args),
+        _ => {
+            return Err(format!(
+                "Expects (int) as first argument, got {}",
+                args[0].dbg_display()
+            ));
+        }
     };
 
     let end = match args.get(1) {
@@ -215,22 +288,29 @@ fn builtin_range(args: &mut [Value]) -> Option<Value> {
             start = 0;
             tmp
         }
-        _ => panic!("range expects (int, opt int), got {:?}", args),
+        _ => {
+            return Err(format!(
+                "Expects (opt int) as second argument, got {}",
+                args[1].dbg_display()
+            ));
+        }
     };
 
-    Some(Value::Range(Box::new(Range { start, end })))
+    Ok(Value::Range(Box::new(Range { start, end })))
 }
 
-pub type ProgramFn = fn(&mut [Value]) -> Option<Value>;
+pub type ProgramFnRes = Result<Value, String>;
+pub type ProgramFn = fn(&mut [Value]) -> ProgramFnRes;
 
 pub struct Program {
     block: Rc<Vec<AstNode>>,
+    tokens: Vec<Token>,
     vars: HashMap<Rc<str>, Value>,
     builtins: HashMap<String, ProgramFn>,
 }
 
 impl Program {
-    pub fn new(block: Vec<AstNode>) -> Self {
+    pub fn new(block: Vec<AstNode>, tokens: Vec<Token>) -> Self {
         let builtins: [(_, ProgramFn); _] = [
             ("print", builtin_print),
             ("readfile", builtin_readfile),
@@ -249,32 +329,49 @@ impl Program {
 
         Program {
             block: Rc::new(block),
+            tokens,
             vars: HashMap::new(),
             builtins,
         }
     }
 
+    fn fatal(&self, msg: &str, node: &AstNode) -> ! {
+        let token = &self.tokens[node.token_idx];
+        fatal_generic(msg, "Fatal error during program execution", token)
+    }
+
     fn compute_expression<'a>(&'a mut self, expr: &'a AstNode) -> Value {
-        match expr {
-            AstNode::Literal(lit) => lit.clone(),
-            AstNode::Variable(name) => self
+        match &expr.kind {
+            AstNodeKind::Literal(lit) => lit.clone(),
+            AstNodeKind::Variable(name) => self
                 .vars
                 .get(name)
-                .unwrap_or_else(|| panic!("Undefined variable: {}", name))
+                .unwrap_or_else(|| self.fatal(&format!("Undefined variable: {}", name), expr))
                 .clone(),
-            AstNode::FunctionCall(name, args) => self
-                .call_function(name, args)
-                .expect("Function did not return a value"),
-            AstNode::List(list) => {
+            AstNodeKind::FunctionCall(name, args) => self.call_function(name, args, expr),
+            AstNodeKind::List(list) => {
                 let values = list
                     .iter()
                     .map(|elem| self.compute_expression(elem))
                     .collect::<Vec<_>>();
                 Value::List(Rc::new(RefCell::new(values)))
             }
-            AstNode::BinaryOp(left, op, right) => {
+            AstNodeKind::BinaryOp(left, op, right) => {
                 let mut left_val = self.compute_expression(left);
                 let mut right_val = self.compute_expression(right);
+
+                macro_rules! unsupported {
+                    () => {
+                        self.fatal(
+                            &format!(
+                                "Cannot apply operator {:?} to operands (left: {:?}, right: {:?})",
+                                op, left_val, right_val,
+                            ),
+                            expr,
+                        )
+                    };
+                }
+
                 if let (Value::String(l), Value::String(r), Operator::Plus) =
                     (&left_val, &right_val, op)
                 {
@@ -287,7 +384,7 @@ impl Program {
                         }
                         Operator::Eq => Value::Integer((l == r) as i64),
                         Operator::Neq => Value::Integer((l != r) as i64),
-                        _ => panic!("Cannot apply operator {:?} to strings", op),
+                        _ => unsupported!(),
                     };
                 }
 
@@ -329,45 +426,51 @@ impl Program {
                     };
                 }
 
-                panic!(
-                    "Unsupported operand types (left: {:?}, right: {:?}) for operator {:?}",
-                    left_val, right_val, op
-                );
+                unsupported!();
             }
-            _ => panic!("Unsupported expression type"),
+            _ => self.fatal(
+                &format!("Unexpected AST node in expression: {:#?}", expr),
+                expr,
+            ),
         }
     }
 
-    fn call_function(&mut self, name: &str, args: &[AstNode]) -> Option<Value> {
+    fn call_function(&mut self, name: &str, args: &[AstNode], node: &AstNode) -> Value {
         let mut arg_values = [const { Value::Integer(0) }; 10];
         if args.len() > arg_values.len() {
-            panic!(
-                "Function {} called with too many arguments (max {})",
-                name,
-                arg_values.len()
+            self.fatal(
+                &format!(
+                    "Function {} called with too many arguments (max={})",
+                    name,
+                    arg_values.len()
+                ),
+                node,
             );
         }
         for (v, a) in arg_values.iter_mut().zip(args.iter()) {
             *v = self.compute_expression(a);
         }
         if let Some(func) = self.builtins.get(name) {
-            func(&mut arg_values[..args.len()])
+            match func(&mut arg_values[..args.len()]) {
+                Ok(val) => val,
+                Err(err) => self.fatal(&format!("Error in function {}: {}", name, err), node),
+            }
         } else {
-            panic!("Undefined function: {}", name);
+            self.fatal(&format!("Undefined function: {}", name), node);
         }
     }
 
     fn execute_block(&mut self, block: &[AstNode]) {
         for node in block.iter() {
-            match node {
-                AstNode::Assign(var, expr) => {
+            match &node.kind {
+                AstNodeKind::Assign(var, expr) => {
                     let value = self.compute_expression(expr);
                     self.vars.insert(Rc::clone(var), value.clone());
                 }
-                AstNode::FunctionCall(name, args) => {
-                    self.call_function(name, args);
+                AstNodeKind::FunctionCall(name, args) => {
+                    self.call_function(name, args, node);
                 }
-                AstNode::ForLoop(index_var, item_var, collection, body) => {
+                AstNodeKind::ForLoop(index_var, item_var, collection, body) => {
                     let collection = self.compute_expression(collection);
 
                     let index_key = if index_var.as_ref() != "_" {
@@ -406,14 +509,23 @@ impl Program {
                                 self.execute_block(body);
                             }
                         }
-                        _ => panic!("For loop expects a list or range"),
+                        _ => self.fatal(
+                            &format!("For loop expects a list or range, got {:?}", collection),
+                            node,
+                        ),
                     };
                 }
-                AstNode::IfExpression(condition, block, else_block) => {
+                AstNodeKind::IfExpression(condition, block, else_block) => {
                     let cond_value = self.compute_expression(condition);
                     let cond_true = match cond_value {
                         Value::Integer(i) => i != 0,
-                        _ => panic!("If condition must evaluate to an integer"),
+                        _ => self.fatal(
+                            &format!(
+                                "If condition must evaluate to an integer, got {:?}",
+                                cond_value
+                            ),
+                            node,
+                        ),
                     };
                     if cond_true {
                         self.execute_block(block);
@@ -422,7 +534,10 @@ impl Program {
                     }
                 }
                 _ => {
-                    panic!("Unexpected AST node during execution: {:#?}", node);
+                    self.fatal(
+                        &format!("Unexpected AST node during execution: {:#?}", node),
+                        node,
+                    );
                 }
             }
         }
