@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::HashMap, io::Write, rc::Rc};
+use foldhash::{HashMap, HashMapExt};
+use std::{cell::RefCell, io::Write, rc::Rc};
 
 use log::trace;
 
@@ -259,7 +260,7 @@ impl Program {
             ("mod", builtin_mod),
             ("range", builtin_range),
         ];
-        let builtins = HashMap::<String, ProgramFn>::from(
+        let builtins = HashMap::<String, ProgramFn>::from_iter(
             builtins.map(|(name, func)| (name.to_owned(), func)),
         );
 
@@ -330,7 +331,7 @@ impl Program {
                     left_val = Value::Float(*i as f64);
                 };
 
-                if let (Value::Float(l), Value::Float(r)) = (left_val, right_val) {
+                if let (Value::Float(l), Value::Float(r)) = (&left_val, &right_val) {
                     return match op {
                         Operator::Plus => Value::Float(l + r),
                         Operator::Minus => Value::Float(l - r),
@@ -345,7 +346,10 @@ impl Program {
                     };
                 }
 
-                panic!("Unsupported operand types for binary operation");
+                panic!(
+                    "Unsupported operand types (left: {:?}, right: {:?}) for operator {:?}",
+                    left_val, right_val, op
+                );
             }
             _ => panic!("Unsupported expression type"),
         }
@@ -367,37 +371,54 @@ impl Program {
         for node in block.iter() {
             match node {
                 AstNode::Assign(var, expr) => {
-                    trace!("Assigning to variable: {}", var);
                     let value = self.compute_expression(expr);
-                    self.vars.insert(Rc::from(var.clone()), value.clone());
+                    if let Some(v) = self.vars.get_mut(var.as_str()) {
+                        *v = value.clone();
+                    } else {
+                        self.vars.insert(Rc::from(var.clone()), value.clone());
+                    }
                 }
                 AstNode::FunctionCall(name, args) => {
-                    trace!("Calling function: {}", name);
                     self.call_function(name, args);
                 }
                 AstNode::ForLoop(index_var, item_var, collection, body) => {
                     let collection = self.compute_expression(collection);
 
-                    let index_key = Rc::from(index_var.as_str());
-                    let item_key = if let Some(v) = item_var {
-                        Rc::from(v.as_str())
+                    let index_key = if index_var.as_str() != "_" {
+                        let index_key = Rc::from(index_var.as_str());
+                        self.vars.insert(Rc::clone(&index_key), Value::Integer(0));
+                        Some(index_key)
                     } else {
-                        Rc::from("_INTERNAL_UNUSED")
+                        None
                     };
-                    self.vars.insert(Rc::clone(&index_key), Value::Integer(0));
-                    self.vars.insert(Rc::clone(&item_key), Value::Integer(0));
+                    let item_key = if let Some(item_var) = item_var
+                        && item_var.as_str() != "_"
+                    {
+                        let item_key = Rc::from(item_var.as_str());
+                        self.vars.insert(Rc::clone(&item_key), Value::Integer(0));
+                        Some(item_key)
+                    } else {
+                        None
+                    };
 
                     match collection {
                         Value::List(l) => {
                             for (i, elem) in l.borrow().iter().enumerate() {
-                                *self.vars.get_mut(&index_key).unwrap() = Value::Integer(i as i64);
-                                *self.vars.get_mut(&item_key).unwrap() = elem.clone();
+                                if let Some(ref index_key) = index_key {
+                                    *self.vars.get_mut(index_key).unwrap() =
+                                        Value::Integer(i as i64);
+                                }
+                                if let Some(ref item_key) = item_key {
+                                    *self.vars.get_mut(item_key).unwrap() = elem.clone();
+                                }
                                 self.execute_block(body);
                             }
                         }
                         Value::Range(start, end) => {
                             for i in start..end {
-                                *self.vars.get_mut(&index_key).unwrap() = Value::Integer(i);
+                                if let Some(ref index_key) = index_key {
+                                    *self.vars.get_mut(index_key).unwrap() = Value::Integer(i);
+                                }
                                 self.execute_block(body);
                             }
                         }
