@@ -50,7 +50,7 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     let content = std::fs::read_to_string(filename.as_ref())
         .map_err(|_| format!("Failed to read file: {}", filename))?;
 
-    Ok(Value::String(content.trim().into()))
+    Ok(Value::String(content.trim().to_owned().into()))
 }
 
 pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
@@ -63,7 +63,7 @@ pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
 
     let parts: Vec<Value> = s
         .split(delim.as_ref())
-        .map(|part| Value::String(Rc::from(part)))
+        .map(|part| Value::String(Rc::from(part.to_owned())))
         .collect();
 
     Ok(Value::List(Rc::new(RefCell::new(parts))))
@@ -132,7 +132,7 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     end = end.min(string.len() as i64);
 
     let substring = &string[start as usize..end as usize];
-    Ok(Value::String(Rc::from(substring)))
+    Ok(Value::String(Rc::from(substring.to_owned())))
 }
 
 pub fn builtin_set(args: &[Value]) -> ProgramFnRes {

@@ -66,7 +66,7 @@ impl Operator {
 pub enum Value {
     Integer(i64),
     Float(f64),
-    String(Rc<str>),
+    String(Rc<String>),
     List(Rc<RefCell<Vec<Value>>>),
     Range(Box<Range>),
 }

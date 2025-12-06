@@ -490,12 +490,9 @@ impl Vm {
             };
         }
 
-        if let (Value::String(l), Value::String(r), Operator::Plus) = (&left_val, &right_val, op) {
-            return Value::String(Rc::from([l.as_ref(), r.as_ref()].concat()));
-        }
         if let (Value::String(l), Value::String(r)) = (&left_val, &right_val) {
             return match op {
-                Operator::Plus => Value::String(Rc::from([l.as_ref(), r.as_ref()].concat())),
+                Operator::Plus => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
                 Operator::Eq => Value::Integer((l == r) as i64),
                 Operator::Neq => Value::Integer((l != r) as i64),
                 _ => unsupported!(),
