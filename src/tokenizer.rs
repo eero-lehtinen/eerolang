@@ -66,7 +66,13 @@ pub enum Value {
     Float(f64),
     String(Rc<str>),
     List(Rc<RefCell<Vec<Value>>>),
-    Range(i64, i64),
+    Range(Box<Range>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Range {
+    pub start: i64,
+    pub end: i64,
 }
 
 pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {

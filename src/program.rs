@@ -5,7 +5,7 @@ use log::trace;
 
 use crate::{
     ast_parser::AstNode,
-    tokenizer::{Operator, Value},
+    tokenizer::{Operator, Range, Value},
 };
 
 fn builtin_print(args: &mut [Value]) -> Option<Value> {
@@ -15,8 +15,8 @@ fn builtin_print(args: &mut [Value]) -> Option<Value> {
             Value::Integer(i) => write!(&mut w, "{}", i).unwrap(),
             Value::Float(f) => write!(&mut w, "{}", f).unwrap(),
             Value::String(s) => write!(&mut w, "{}", s).unwrap(),
-            Value::Range(start, end) => {
-                write!(&mut w, "{}..{}", start, end).unwrap();
+            Value::Range(r) => {
+                write!(&mut w, "{}..{}", r.start, r.end).unwrap();
             }
             Value::List(l) => {
                 write!(&mut w, "[").unwrap();
@@ -26,7 +26,7 @@ fn builtin_print(args: &mut [Value]) -> Option<Value> {
                         Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
                         Value::String(ss) => write!(&mut w, "\"{}\"", ss).unwrap(),
                         Value::List(_) => write!(&mut w, "<nested list>").unwrap(),
-                        Value::Range(s, e) => write!(&mut w, "{}..{}", s, e).unwrap(),
+                        Value::Range(r) => write!(&mut w, "{}..{}", r.start, r.end).unwrap(),
                     }
                     if j < l.borrow().len() - 1 {
                         print!(", ");
@@ -218,7 +218,7 @@ fn builtin_range(args: &mut [Value]) -> Option<Value> {
         _ => panic!("range expects (int, opt int), got {:?}", args),
     };
 
-    Some(Value::Range(start, end))
+    Some(Value::Range(Box::new(Range { start, end })))
 }
 
 pub type ProgramFn = fn(&mut [Value]) -> Option<Value>;
@@ -339,12 +339,19 @@ impl Program {
     }
 
     fn call_function(&mut self, name: &str, args: &[AstNode]) -> Option<Value> {
-        let mut arg_values = args
-            .iter()
-            .map(|arg| self.compute_expression(arg))
-            .collect::<Vec<_>>();
+        let mut arg_values = [const { Value::Integer(0) }; 10];
+        if args.len() > arg_values.len() {
+            panic!(
+                "Function {} called with too many arguments (max {})",
+                name,
+                arg_values.len()
+            );
+        }
+        for (v, a) in arg_values.iter_mut().zip(args.iter()) {
+            *v = self.compute_expression(a);
+        }
         if let Some(func) = self.builtins.get(name) {
-            func(&mut arg_values)
+            func(&mut arg_values[..args.len()])
         } else {
             panic!("Undefined function: {}", name);
         }
@@ -391,8 +398,8 @@ impl Program {
                                 self.execute_block(body);
                             }
                         }
-                        Value::Range(start, end) => {
-                            for i in start..end {
+                        Value::Range(r) => {
+                            for i in r.start..r.end {
                                 if let Some(index_key) = index_key {
                                     *self.vars.get_mut(index_key).unwrap() = Value::Integer(i);
                                 }
