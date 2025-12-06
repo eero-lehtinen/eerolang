@@ -276,7 +276,7 @@ impl Program {
             AstNode::Literal(lit) => lit.clone(),
             AstNode::Variable(name) => self
                 .vars
-                .get(name.as_str())
+                .get(name)
                 .unwrap_or_else(|| panic!("Undefined variable: {}", name))
                 .clone(),
             AstNode::FunctionCall(name, args) => self
@@ -372,11 +372,7 @@ impl Program {
             match node {
                 AstNode::Assign(var, expr) => {
                     let value = self.compute_expression(expr);
-                    if let Some(v) = self.vars.get_mut(var.as_str()) {
-                        *v = value.clone();
-                    } else {
-                        self.vars.insert(Rc::from(var.clone()), value.clone());
-                    }
+                    self.vars.insert(Rc::clone(var), value.clone());
                 }
                 AstNode::FunctionCall(name, args) => {
                     self.call_function(name, args);
@@ -384,19 +380,17 @@ impl Program {
                 AstNode::ForLoop(index_var, item_var, collection, body) => {
                     let collection = self.compute_expression(collection);
 
-                    let index_key = if index_var.as_str() != "_" {
-                        let index_key = Rc::from(index_var.as_str());
-                        self.vars.insert(Rc::clone(&index_key), Value::Integer(0));
-                        Some(index_key)
+                    let index_key = if index_var.as_ref() != "_" {
+                        self.vars.insert(Rc::clone(index_var), Value::Integer(0));
+                        Some(index_var)
                     } else {
                         None
                     };
                     let item_key = if let Some(item_var) = item_var
-                        && item_var.as_str() != "_"
+                        && item_var.as_ref() != "_"
                     {
-                        let item_key = Rc::from(item_var.as_str());
-                        self.vars.insert(Rc::clone(&item_key), Value::Integer(0));
-                        Some(item_key)
+                        self.vars.insert(Rc::clone(item_var), Value::Integer(0));
+                        Some(item_var)
                     } else {
                         None
                     };
@@ -404,11 +398,11 @@ impl Program {
                     match collection {
                         Value::List(l) => {
                             for (i, elem) in l.borrow().iter().enumerate() {
-                                if let Some(ref index_key) = index_key {
+                                if let Some(index_key) = index_key {
                                     *self.vars.get_mut(index_key).unwrap() =
                                         Value::Integer(i as i64);
                                 }
-                                if let Some(ref item_key) = item_key {
+                                if let Some(item_key) = item_key {
                                     *self.vars.get_mut(item_key).unwrap() = elem.clone();
                                 }
                                 self.execute_block(body);
@@ -416,7 +410,7 @@ impl Program {
                         }
                         Value::Range(start, end) => {
                             for i in start..end {
-                                if let Some(ref index_key) = index_key {
+                                if let Some(index_key) = index_key {
                                     *self.vars.get_mut(index_key).unwrap() = Value::Integer(i);
                                 }
                                 self.execute_block(body);

@@ -1,20 +1,22 @@
-use std::iter::Peekable;
+use std::{iter::Peekable, rc::Rc};
 
 use log::trace;
 
 use crate::tokenizer::{Operator, Token, TokenKind, Value, report_source_pos};
 
+type VarName = Rc<str>;
+
 #[derive(Debug)]
 pub enum AstNode {
-    Assign(String, Box<AstNode>),
-    FunctionCall(String, Vec<AstNode>),
+    Assign(VarName, Box<AstNode>),
+    FunctionCall(VarName, Vec<AstNode>),
     /// index, item, list, body
-    ForLoop(String, Option<String>, Box<AstNode>, Vec<AstNode>),
+    ForLoop(VarName, Option<VarName>, Box<AstNode>, Vec<AstNode>),
     IfExpression(Box<AstNode>, Vec<AstNode>, Vec<AstNode>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
     List(Vec<AstNode>),
     Literal(Value),
-    Variable(String),
+    Variable(VarName),
 }
 
 trait TokIter<'a>: Iterator<Item = &'a Token<'a>> + Clone {}
@@ -54,7 +56,7 @@ fn parse_function_call<'a, I: TokIter<'a>>(ident: &str, iter: &mut Peekable<I>) 
     };
     iter.next();
     let args = parse_list(iter, TokenKind::Comma, TokenKind::RParen);
-    Some(AstNode::FunctionCall(ident.to_owned(), args))
+    Some(AstNode::FunctionCall(Rc::from(ident), args))
 }
 
 fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
@@ -109,8 +111,8 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let body = parse_block(iter);
 
     AstNode::ForLoop(
-        index_var.clone(),
-        item_var.clone(),
+        Rc::from(index_var.as_str()),
+        item_var.map(|v| Rc::from(v.as_str())),
         Box::new(collection_expr),
         body,
     )
@@ -153,7 +155,7 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
             if let Some(fcall) = parse_function_call(ident, iter) {
                 Some(fcall)
             } else {
-                Some(AstNode::Variable(ident.clone()))
+                Some(AstNode::Variable(Rc::from(ident.as_str())))
             }
         }
         TokenKind::LParen => {
@@ -238,7 +240,7 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
                     trace!("Parsing assignment to {}", ident);
                     iter.next();
                     let expr = parse_expression(iter).unwrap();
-                    AstNode::Assign(ident.clone(), Box::new(expr))
+                    AstNode::Assign(Rc::from(ident.as_str()), Box::new(expr))
                 }
                 _ => {
                     trace!("Parsing function call starting with identifier {}", ident);
