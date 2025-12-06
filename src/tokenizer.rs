@@ -26,7 +26,7 @@ pub enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token<'a> {
     pub line: usize,
-    pub column: usize,
+    pub byte_col: usize,
     pub text: &'a str,
     pub kind: TokenKind,
 }
@@ -69,46 +69,67 @@ pub enum Value {
     Range(i64, i64),
 }
 
-pub fn report_source_pos(row: usize, col: usize) {
+pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
+    SOURCE
+        .get()
+        .unwrap()
+        .lines()
+        .nth(row)
+        .and_then(|line| {
+            line.char_indices()
+                .enumerate()
+                .find_map(|(char_idx, (bidx, _))| {
+                    if bidx >= byte_col {
+                        Some(char_idx)
+                    } else {
+                        None
+                    }
+                })
+        })
+        .unwrap_or(0)
+}
+
+pub fn report_source_pos(row: usize, char_col: usize) {
     for (i, src_line) in SOURCE.get().unwrap().lines().enumerate() {
         if (i as i64 - row as i64).abs() <= 2 {
             eprintln!("{:4} | {}", i + 1, src_line);
         }
         if i == row {
-            eprintln!("       {}^", " ".repeat(col.saturating_sub(1)));
+            eprintln!("       {}^", " ".repeat(char_col.saturating_sub(1)));
         }
     }
 }
 
 pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
-    let mut iter = source.chars().enumerate().peekable();
+    let mut iter = source.char_indices().peekable();
     let mut tbuf = String::new();
     let mut row = 0;
-    let mut row_start = 0;
+    let mut byte_row_start = 0;
 
     macro_rules! panic_with_pos {
         ($msg:expr) => {
-            let col = iter.peek().map_or(0, |(i, _)| i - row_start);
-            eprintln!("{} at line {}, column {}:", &$msg, row + 1, col + 1);
-            report_source_pos(row, col);
+            let byte_col = iter.peek().map_or(0, |(i, _)| i - byte_row_start);
+            let char_col = find_source_char_col(row, byte_col);
+            eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
+            report_source_pos(row, byte_col);
             panic!("Tokenization failed");
         };
     }
 
     macro_rules! update_row {
-        ($i:expr) => {
+        ($i:expr, $ch:expr) => {
             row += 1;
-            row_start = $i + 1;
+            byte_row_start = $i + $ch.len_utf8();
         };
     }
 
-    while let Some((i, ch)) = iter.next() {
+    while let Some((byte_pos, ch)) = iter.next() {
         macro_rules! tok {
             ($text:expr, $kind:expr) => {
                 tokens.push(Token {
                     line: row,
-                    column: i - row_start,
+                    byte_col: byte_pos - byte_row_start,
                     text: $text,
                     kind: $kind,
                 })
@@ -162,7 +183,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
             '#' => {
                 for (i, next_ch) in iter.by_ref() {
                     if next_ch == '\n' {
-                        update_row!(i);
+                        update_row!(i, next_ch);
                         break;
                     }
                 }
@@ -193,22 +214,22 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                     escape = false;
                 }
                 tok!(
-                    &source[i..i + tbuf.len() + 1],
+                    &source[byte_pos..byte_pos + tbuf.len() + 1],
                     TokenKind::Literal(Value::String(tbuf.clone().into()))
                 );
                 tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
-                let mut j = i;
-                while let Some(&(_, next_ch)) = iter.peek() {
-                    j += 1;
+                let mut byte_end_pos = byte_pos;
+                while let Some(&(i, next_ch)) = iter.peek() {
+                    byte_end_pos = i;
                     if next_ch.is_alphanumeric() || next_ch == '_' {
                         iter.next();
                     } else {
                         break;
                     }
                 }
-                match &source[i..j] {
+                match &source[byte_pos..byte_end_pos] {
                     "for" => tok!("for", TokenKind::KeywordFor),
                     "in" => tok!("in", TokenKind::KeywordIn),
                     "if" => tok!("if", TokenKind::KeywordIf),
@@ -217,10 +238,10 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                 }
             }
             ch if ch.is_ascii_digit() => {
-                let mut j = i;
+                let mut byte_end_pos = byte_pos;
                 let mut is_float = false;
-                while let Some(&(_, next_ch)) = iter.peek() {
-                    j += 1;
+                while let Some(&(i, next_ch)) = iter.peek() {
+                    byte_end_pos = i;
                     if next_ch.is_ascii_digit() {
                         iter.next();
                     } else if next_ch == '.' && !is_float {
@@ -236,11 +257,11 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                 {
                     panic_with_pos!(format!(
                         "Invalid numeric literal: '{}{}'",
-                        &source[i..j],
+                        &source[byte_pos..byte_end_pos],
                         iter.peek().unwrap().1
                     ));
                 }
-                let data = &source[i..j];
+                let data = &source[byte_pos..byte_end_pos];
                 if is_float {
                     if let Ok(float_val) = data.parse::<f64>() {
                         tok!(data, TokenKind::Literal(Value::Float(float_val)));
@@ -253,11 +274,10 @@ pub fn tokenize(source: &'_ str) -> Vec<Token<'_>> {
                     panic_with_pos!(format!("Invalid integer literal: '{}'", data));
                 }
             }
-            ch if ch.is_whitespace() => {
-                if ch == '\n' {
-                    update_row!(i);
-                }
+            '\n' => {
+                update_row!(byte_pos, ch);
             }
+            ch if ch.is_whitespace() => {}
             _ => {
                 panic_with_pos!(format!("Unexpected character: {}", ch));
             }

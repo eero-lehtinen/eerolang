@@ -117,7 +117,7 @@ fn builtin_substr(args: &mut [Value]) -> Option<Value> {
 
 fn builtin_set(args: &mut [Value]) -> Option<Value> {
     let [target, index, value] = args else {
-        panic!("set expects (list/string, int, value), got {:?}", args)
+        panic!("set expects (list, int, value), got {:?}", args)
     };
 
     let index = match &index {
@@ -131,23 +131,6 @@ fn builtin_set(args: &mut [Value]) -> Option<Value> {
                 panic!("set index out of bounds");
             }
             l.borrow_mut()[index] = value.clone();
-            None
-        }
-        Value::String(s) => {
-            if index >= s.len() {
-                panic!("set index out of bounds");
-            }
-            let Value::String(new_char_str) = value else {
-                panic!("set value for string must be a single character string");
-            };
-            let new_char = new_char_str
-                .chars()
-                .next()
-                .expect("set value for string must be a single character string");
-            let mut chars: Vec<char> = s.chars().collect();
-            chars[index] = new_char;
-            let new_string: String = chars.into_iter().collect();
-            *s = Rc::from(new_string);
             None
         }
         _ => panic!("set expects (list, int, value), got {:?}", args),

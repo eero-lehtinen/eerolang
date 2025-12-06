@@ -2,7 +2,9 @@ use std::{iter::Peekable, rc::Rc};
 
 use log::trace;
 
-use crate::tokenizer::{Operator, Token, TokenKind, Value, report_source_pos};
+use crate::tokenizer::{
+    Operator, Token, TokenKind, Value, find_source_char_col, report_source_pos,
+};
 
 type VarName = Rc<str>;
 
@@ -264,14 +266,15 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
 }
 
 pub fn fatal(msg: &str, token: &Token) -> ! {
+    let char_col = find_source_char_col(token.line, token.byte_col);
     eprintln!(
         "{} at token '{}', line {}, column {}",
         msg,
         token.text,
         token.line + 1,
-        token.column + 1,
+        char_col + 1
     );
-    report_source_pos(token.line, token.column);
+    report_source_pos(token.line, char_col);
     panic!("Parsing failed");
 }
 
