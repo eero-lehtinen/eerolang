@@ -6,7 +6,6 @@ use crate::vm::Vm;
 
 mod ast_parser;
 mod builtins;
-mod program;
 mod tokenizer;
 mod vm;
 
