@@ -60,6 +60,21 @@ impl Operator {
             Operator::Multiply | Operator::Divide => 2,
         }
     }
+
+    pub fn dbg_display(&self) -> &'static str {
+        match self {
+            Operator::Plus => "+",
+            Operator::Minus => "-",
+            Operator::Multiply => "*",
+            Operator::Divide => "/",
+            Operator::Lt => "<",
+            Operator::Gt => ">",
+            Operator::Lte => "<=",
+            Operator::Gte => ">=",
+            Operator::Eq => "==",
+            Operator::Neq => "!=",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

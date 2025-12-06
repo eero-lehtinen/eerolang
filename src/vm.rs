@@ -4,9 +4,9 @@ use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
-    ast_parser::{AstNode, AstNodeKind},
+    ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ProgramFn, builtin_get, get_builtins},
-    tokenizer::{Operator, Value},
+    tokenizer::{Operator, Token, Value},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,15 +80,17 @@ const ARG_REG_COUNT: u32 = 10;
 const RESERVED_REGS: u32 = 20;
 const STACK_SIZE: u32 = 2 << 11;
 
-pub struct Compilation {
+pub struct Compilation<'a> {
     instructions: Vec<Inst>,
     variables: HashMap<Rc<str>, Addr>,
     literals: Vec<(Value, Addr)>,
     functions: HashMap<Rc<str>, (ProgramFn, usize)>,
+    tokens: &'a [Token],
+    ip_to_token: Vec<usize>,
 }
 
-impl Compilation {
-    fn new() -> Self {
+impl<'a> Compilation<'a> {
+    fn new(tokens: &'a [Token]) -> Self {
         let mut functions = HashMap::new();
         for (i, (name, func)) in get_builtins().iter().enumerate() {
             functions.insert(Rc::from(*name), (*func, i));
@@ -98,7 +100,14 @@ impl Compilation {
             variables: HashMap::new(),
             literals: Vec::new(),
             functions,
+            tokens,
+            ip_to_token: Vec::new(),
         }
+    }
+
+    fn fatal(&self, msg: &str, node: &AstNode) -> ! {
+        let token = &self.tokens[node.token_idx];
+        fatal_generic(msg, "Fatal error during compilation", token)
     }
 
     fn cur_inst_ptr(&self) -> usize {
@@ -122,18 +131,26 @@ impl Compilation {
         addr
     }
 
+    fn push_instruction(&mut self, inst: Inst, node: &AstNode) {
+        self.instructions.push(inst);
+        self.ip_to_token.push(node.token_idx);
+    }
+
     fn compile_function_args(&mut self, args: &[AstNode]) {
         if args.len() > ARG_REG_COUNT as usize {
-            panic!("Too many arguments in function call");
+            self.fatal("Too many arguments in function call", &args[0]);
         }
         for (i, arg) in args.iter().enumerate() {
             let arg_reg = Addr::Abs(ARG_REG_START + i as u32);
             let res_reg = self.compile_expression(arg, arg_reg);
             if res_reg != arg_reg {
-                self.instructions.push(Inst::Load {
-                    dst: arg_reg,
-                    src: res_reg,
-                });
+                self.push_instruction(
+                    Inst::Load {
+                        dst: arg_reg,
+                        src: res_reg,
+                    },
+                    arg,
+                );
             }
         }
     }
@@ -145,24 +162,39 @@ impl Compilation {
         }
         for (i, &arg_reg) in args.iter().enumerate() {
             let target_reg = ARG_REG_START + i as u32;
-            self.instructions.push(Inst::Load {
-                dst: Addr::Abs(target_reg),
-                src: Addr::Abs(arg_reg),
-            });
+            self.push_instruction(
+                Inst::Load {
+                    dst: Addr::Abs(target_reg),
+                    src: Addr::Abs(arg_reg),
+                },
+                &AstNode {
+                    kind: AstNodeKind::Literal(Value::Integer(0)),
+                    token_idx: 0,
+                },
+            );
         }
     }
 
-    fn compile_function_call(&mut self, name: &Rc<str>, arg_count: usize, dst: Addr) -> Addr {
+    fn compile_function_call(
+        &mut self,
+        name: &Rc<str>,
+        arg_count: usize,
+        dst: Addr,
+        node: &AstNode,
+    ) -> Addr {
         let (_, func_index) = self
             .functions
             .get(name)
-            .unwrap_or_else(|| panic!("Undefined function: {}", name));
+            .unwrap_or_else(|| self.fatal(&format!("Undefined function: {}", name), node));
 
-        self.instructions.push(Inst::Call {
-            dst,
-            func: *func_index,
-            arg_count: arg_count as u8,
-        });
+        self.push_instruction(
+            Inst::Call {
+                dst,
+                func: *func_index,
+                arg_count: arg_count as u8,
+            },
+            node,
+        );
 
         dst
     }
@@ -174,17 +206,20 @@ impl Compilation {
             AstNodeKind::BinaryOp(left, op, right) => {
                 let left_reg = self.compile_expression(left, RESULT_REG1);
                 let right_reg = self.compile_expression(right, RESULT_REG2);
-                self.instructions.push(Inst::BinaryOp {
-                    op: *op,
-                    dst: dst_suggestion,
-                    src1: left_reg,
-                    src2: right_reg,
-                });
+                self.push_instruction(
+                    Inst::BinaryOp {
+                        op: *op,
+                        dst: dst_suggestion,
+                        src1: left_reg,
+                        src2: right_reg,
+                    },
+                    expr,
+                );
                 dst_suggestion
             }
             AstNodeKind::FunctionCall(name, args) => {
                 self.compile_function_args(args);
-                self.compile_function_call(name, args.len(), dst_suggestion)
+                self.compile_function_call(name, args.len(), dst_suggestion, expr)
             }
             _ => todo!(),
         }
@@ -197,75 +232,93 @@ impl Compilation {
                     let var_reg = self.variable_addr(var);
                     let expr_reg = self.compile_expression(expr, var_reg);
                     if expr_reg != var_reg {
-                        self.instructions.push(Inst::Load {
-                            dst: var_reg,
-                            src: expr_reg,
-                        });
+                        self.push_instruction(
+                            Inst::Load {
+                                dst: var_reg,
+                                src: expr_reg,
+                            },
+                            node,
+                        );
                     }
                 }
                 AstNodeKind::FunctionCall(name, args) => {
                     self.compile_function_args(args);
-                    self.compile_function_call(name, args.len(), RESULT_REG1);
+                    self.compile_function_call(name, args.len(), RESULT_REG1, node);
                 }
                 AstNodeKind::ForLoop(index_var, item_var, collection, body) => {
                     let iterable_addr = self.compile_expression(collection, RESULT_REG1);
 
-                    self.instructions.push(Inst::Push { src: iterable_addr });
-                    self.instructions.push(Inst::Push { src: ZERO_REG });
+                    self.push_instruction(Inst::Push { src: iterable_addr }, node);
+                    self.push_instruction(Inst::Push { src: ZERO_REG }, node);
                     let iterable_addr = Addr::Stack(1);
                     let index_addr = Addr::Stack(0);
 
                     let for_cmp_ip = self.cur_inst_ptr();
-                    self.instructions.push(Inst::JumpIfNotInRange {
-                        target: 0, // Placeholder, will be filled later
-                        range: iterable_addr,
-                        src: index_addr,
-                    });
+                    self.push_instruction(
+                        Inst::JumpIfNotInRange {
+                            target: 0, // Placeholder, will be filled later
+                            range: iterable_addr,
+                            src: index_addr,
+                        },
+                        node,
+                    );
 
                     if index_var.as_ref() != "_" {
                         let index_reg = self.variable_addr(index_var);
-                        self.instructions.push(Inst::Load {
-                            dst: index_reg,
-                            src: index_addr,
-                        });
+                        self.push_instruction(
+                            Inst::Load {
+                                dst: index_reg,
+                                src: index_addr,
+                            },
+                            node,
+                        );
                     }
 
                     if item_var.as_ref().is_some_and(|v| v.as_ref() != "_") {
                         let item_reg = self.variable_addr(item_var.as_ref().unwrap());
-                        self.instructions.push(Inst::LoadFromCollection {
-                            dst: item_reg,
-                            collection: iterable_addr,
-                            index: index_addr,
-                        });
+                        self.push_instruction(
+                            Inst::LoadFromCollection {
+                                dst: item_reg,
+                                collection: iterable_addr,
+                                index: index_addr,
+                            },
+                            node,
+                        );
                     }
 
                     self.compile_block(body);
 
-                    self.instructions.push(Inst::Incr { dst: index_addr });
-                    self.instructions.push(Inst::Jump { target: for_cmp_ip });
+                    self.push_instruction(Inst::Incr { dst: index_addr }, node);
+                    self.push_instruction(Inst::Jump { target: for_cmp_ip }, node);
 
                     let loop_end_ip = self.cur_inst_ptr();
                     self.instructions[for_cmp_ip].set_jump_target(loop_end_ip);
 
-                    self.instructions.push(Inst::Pop { dst: TRASH_REG });
-                    self.instructions.push(Inst::Pop { dst: TRASH_REG });
+                    self.push_instruction(Inst::Pop { dst: TRASH_REG }, node);
+                    self.push_instruction(Inst::Pop { dst: TRASH_REG }, node);
                 }
                 AstNodeKind::IfStatement(condition, block, else_block) => {
                     let cond_reg = self.compile_expression(condition, RESULT_REG1);
 
                     let if_jump_ip = self.cur_inst_ptr();
-                    self.instructions.push(Inst::JumpIfZero {
-                        target: 0, // Placeholder
-                        cond: cond_reg,
-                    });
+                    self.push_instruction(
+                        Inst::JumpIfZero {
+                            target: 0, // Placeholder
+                            cond: cond_reg,
+                        },
+                        node,
+                    );
 
                     self.compile_block(block);
 
                     if !else_block.is_empty() {
                         let else_jump_ip = self.cur_inst_ptr();
-                        self.instructions.push(Inst::Jump {
-                            target: 0, // Placeholder
-                        });
+                        self.push_instruction(
+                            Inst::Jump {
+                                target: 0, // Placeholder
+                            },
+                            node,
+                        );
 
                         let else_start_ip = self.cur_inst_ptr();
                         self.instructions[if_jump_ip].set_jump_target(else_start_ip);
@@ -280,7 +333,7 @@ impl Compilation {
                     }
                 }
                 _ => {
-                    panic!("Unsupported AST node in compile_block: {:?}", node.kind);
+                    self.fatal("Unsupported AST node in compilation", node);
                 }
             }
         }
@@ -288,8 +341,8 @@ impl Compilation {
 }
 
 #[allow(dead_code)]
-pub fn compile(block: &[AstNode]) -> Compilation {
-    let mut c = Compilation::new();
+pub fn compile<'a>(block: &[AstNode], tokens: &'a [Token]) -> Compilation<'a> {
+    let mut c = Compilation::new(tokens);
     c.compile_block(block);
     for ins in c.instructions.iter() {
         trace!("{:?}", ins);
@@ -298,8 +351,10 @@ pub fn compile(block: &[AstNode]) -> Compilation {
 }
 
 #[allow(dead_code)]
-pub struct Vm {
+pub struct Vm<'a> {
     instructions: Vec<Inst>,
+    ip_to_token: Vec<usize>,
+    tokens: &'a [Token],
     ip: usize,
     sp: usize,
     memory: Vec<Value>,
@@ -311,8 +366,8 @@ fn placeholder_func(_: &[Value]) -> Result<Value, String> {
 }
 
 #[allow(dead_code)]
-impl Vm {
-    pub fn new(ctx: Compilation) -> Self {
+impl<'a> Vm<'a> {
+    pub fn new(ctx: Compilation<'a>) -> Self {
         let mut memory = vec![
             Value::Integer(0);
             ctx.variables.len() + RESERVED_REGS as usize + STACK_SIZE as usize
@@ -331,11 +386,25 @@ impl Vm {
 
         Vm {
             instructions: ctx.instructions,
+            ip_to_token: ctx.ip_to_token,
+            tokens: ctx.tokens,
             ip: 0,
             memory,
             functions,
             sp: RESERVED_REGS as usize,
         }
+    }
+
+    fn fatal(&self, msg: &str) -> ! {
+        let token = &self.tokens[self.ip_to_token[self.ip]];
+        fatal_generic(
+            msg,
+            &format!(
+                "Fatal error during VM execution at inst {:?}",
+                self.instructions[self.ip]
+            ),
+            token,
+        )
     }
 
     fn mem(&self, addr: Addr) -> usize {
@@ -406,7 +475,7 @@ impl Vm {
                     src1,
                     src2,
                 } => {
-                    let res = Vm::binary_op(self.mem_get(src1), op, self.mem_get(src2));
+                    let res = self.binary_op(self.mem_get(src1), op, self.mem_get(src2));
                     self.mem_set(dst, res);
                 }
                 Inst::Call {
@@ -416,20 +485,24 @@ impl Vm {
                 } => {
                     self.call_function(dst, func, arg_count);
                 }
-                Inst::Incr { dst } => {
-                    if let Value::Integer(i) = self.mem_get(dst) {
+                Inst::Incr { dst } => match self.mem_get(dst) {
+                    Value::Integer(i) => {
                         self.mem_set(dst, Value::Integer(i + 1));
-                    } else {
-                        panic!("Cannot increment non-integer value in addr {:?}", dst);
                     }
-                }
+                    v => {
+                        self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
+                    }
+                },
                 Inst::JumpIfNotInRange { target, range, src } => {
                     let iterable_value = self.mem_get(range);
                     let index = self.mem_get(src);
 
                     let index = match index {
                         Value::Integer(i) => *i,
-                        _ => panic!("Cannot compare non-integer value in addr {:?}", src),
+                        v => self.fatal(&format!(
+                            "Expected (int) as index, got {:?}",
+                            v.dbg_display()
+                        )),
                     };
 
                     let in_range = match iterable_value {
@@ -438,7 +511,10 @@ impl Vm {
                             index >= 0 && index < list.len() as i64
                         }
                         Value::Range(r) => index >= r.start && index < r.end,
-                        _ => panic!("Cannot get length of non-list value in addr {:?}", range),
+                        v => self.fatal(&format!(
+                            "Expected (list/range) as iterable, got {:?}",
+                            v.dbg_display()
+                        )),
                     };
                     if !in_range {
                         self.ip = target;
@@ -453,7 +529,10 @@ impl Vm {
                     let cond_value = &self.mem_get(cond);
                     let is_zero = match cond_value {
                         Value::Integer(i) => *i == 0,
-                        _ => panic!("Cannot evaluate truthiness of value in register {:?}", cond),
+                        _ => self.fatal(&format!(
+                            "Expected (int) as condition, got {:?}",
+                            cond_value.dbg_display()
+                        )),
                     };
                     if is_zero {
                         self.ip = target;
@@ -466,27 +545,26 @@ impl Vm {
     }
 
     fn call_function(&mut self, dst: Addr, func: usize, arg_count: u8) {
-        let func_impl = &self.functions[func];
+        debug_assert!(func < self.functions.len());
+        let func_impl = unsafe { self.functions.get_unchecked(func) };
         let args =
             &mut self.memory[ARG_REG_START as usize..ARG_REG_START as usize + arg_count as usize];
-        let result = func_impl(args).expect("Function call failed");
+        let result = match func_impl(args) {
+            Ok(v) => v,
+            Err(e) => self.fatal(&format!("Error in function call: {}", e)),
+        };
         self.mem_set(dst, result);
     }
 
-    fn binary_op(left_val: &Value, op: Operator, right_val: &Value) -> Value {
+    fn binary_op(&self, left_val: &Value, op: Operator, right_val: &Value) -> Value {
         macro_rules! unsupported {
             () => {
-                panic!(
-                    "Cannot apply operator {:?} to operands (left: {:?}, right: {:?})",
-                    op, left_val, right_val,
-                )
-                // self.fatal(
-                //     &format!(
-                //         "Cannot apply operator {:?} to operands (left: {:?}, right: {:?})",
-                //         op, left_val, right_val,
-                //     ),
-                //     expr,
-                // )
+                self.fatal(&format!(
+                    "Cannot apply operator '{}' to operands {} and {})",
+                    op.dbg_display(),
+                    left_val.dbg_display(),
+                    right_val.dbg_display()
+                ))
             };
         }
 

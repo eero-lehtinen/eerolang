@@ -37,7 +37,7 @@ fn main() {
     let parse_end = Instant::now();
 
     let compile_start = Instant::now();
-    let compilation = vm::compile(&block);
+    let compilation = vm::compile(&block, &tokens);
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();
