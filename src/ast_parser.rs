@@ -21,6 +21,8 @@ pub enum AstNodeKind {
         Box<AstNode>,
         Box<AstNode>,
     ),
+    Continue,
+    Break,
     /// condition, then block, else block
     IfStatement(Box<AstNode>, Box<AstNode>, Option<Box<AstNode>>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
@@ -93,6 +95,7 @@ fn parse_function_call<'a, I: TokIter<'a>>(
 fn parse_block<'a, I: TokIter<'a>>(
     iter: &mut Peekable<I>,
     top_level: bool,
+    is_loop: bool,
     extra_vars: Vec<String>,
 ) -> Box<AstNode> {
     let token_idx = if !top_level {
@@ -117,8 +120,7 @@ fn parse_block<'a, I: TokIter<'a>>(
             iter.next();
             break;
         }
-        let stmt = parse_statement(iter);
-        if let Some(node) = stmt {
+        if let Some(node) = parse_statement(iter, is_loop) {
             block.push(node);
             if let AstNodeKind::Assign(var_name, _) = &block.last().unwrap().kind
                 && !local_vars.contains(var_name)
@@ -198,7 +200,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     if let Some(item_var) = &item_var {
         extra_vars.push(item_var.clone());
     }
-    let body = parse_block(iter, false, extra_vars);
+    let body = parse_block(iter, false, true, extra_vars);
 
     AstNode {
         token_idx,
@@ -212,7 +214,7 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     }
 }
 
-fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
+fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, is_loop: bool) -> AstNode {
     let if_token = iter.next().unwrap();
     let token_idx = if_token.index;
     trace!("Parsing if expression, if token: {:?}", if_token);
@@ -223,14 +225,14 @@ fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
             iter.peek().unwrap(),
         );
     });
-    let block = parse_block(iter, false, vec![]);
+    let block = parse_block(iter, false, is_loop, vec![]);
 
     let else_token = iter.peek();
     let else_block = else_token
         .is_some_and(|t| t.kind == TokenKind::KeywordElse)
         .then(|| {
             iter.next();
-            parse_block(iter, false, vec![])
+            parse_block(iter, false, is_loop, vec![])
         });
     AstNode {
         token_idx,
@@ -349,7 +351,7 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
     Some(left)
 }
 
-fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode> {
+fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, is_loop: bool) -> Option<AstNode> {
     let token = iter.peek()?;
 
     let statement = match &token.kind {
@@ -375,7 +377,21 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode
             }
         }
         TokenKind::KeywordFor => parse_for_loop(iter),
-        TokenKind::KeywordIf => parse_if_statement(iter),
+        TokenKind::KeywordIf => parse_if_statement(iter, is_loop),
+        TokenKind::KeywordContinue if is_loop => {
+            let continue_token = iter.next().unwrap();
+            AstNode {
+                token_idx: continue_token.index,
+                kind: AstNodeKind::Continue,
+            }
+        }
+        TokenKind::KeywordBreak if is_loop => {
+            let break_token = iter.next().unwrap();
+            AstNode {
+                token_idx: break_token.index,
+                kind: AstNodeKind::Break,
+            }
+        }
         _ => return None,
     };
     Some(statement)
@@ -403,7 +419,7 @@ pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
 pub fn parse(tokens: &[Token]) -> Box<AstNode> {
     let mut iter = tokens.iter().peekable();
 
-    let block = parse_block(&mut iter, true, vec![]);
+    let block = parse_block(&mut iter, true, false, vec![]);
 
     if iter.peek().is_some() {
         fatal(

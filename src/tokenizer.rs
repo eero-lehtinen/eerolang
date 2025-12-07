@@ -20,6 +20,8 @@ pub enum TokenKind {
     KeywordIn,
     KeywordIf,
     KeywordElse,
+    KeywordContinue,
+    KeywordBreak,
 }
 
 impl Display for TokenKind {
@@ -38,6 +40,8 @@ impl Display for TokenKind {
             TokenKind::KeywordIn => write!(f, "in"),
             TokenKind::KeywordIf => write!(f, "if"),
             TokenKind::KeywordElse => write!(f, "else"),
+            TokenKind::KeywordContinue => write!(f, "continue"),
+            TokenKind::KeywordBreak => write!(f, "break"),
         }
     }
 }
@@ -310,7 +314,8 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
             let char_col = find_source_char_col(row, byte_col);
             eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
             report_source_pos(row, byte_col);
-            panic!("Tokenization failed");
+            eprintln!("Tokenization failed");
+            std::process::exit(1);
         };
     }
 
@@ -432,6 +437,8 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                     "in" => tok!("in".len(), TokenKind::KeywordIn),
                     "if" => tok!("if".len(), TokenKind::KeywordIf),
                     "else" => tok!("else".len(), TokenKind::KeywordElse),
+                    "continue" => tok!("continue".len(), TokenKind::KeywordContinue),
+                    "break" => tok!("break".len(), TokenKind::KeywordBreak),
                     ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }

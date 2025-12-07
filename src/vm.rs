@@ -191,7 +191,7 @@ impl<'a> Vm<'a> {
                         );
                     }
                 }
-                &Inst::InitMapIterationList { src } => {
+                &Inst::InitMapIterationList { dst: src } => {
                     // Other types get ignored
                     let map = self.mem_get(src);
                     if let Value::Map(map) = map {
