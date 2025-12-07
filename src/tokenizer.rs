@@ -1,5 +1,6 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
+use foldhash::HashMap;
 use log::trace;
 
 use crate::SOURCE;
@@ -105,14 +106,15 @@ pub enum Value {
     Float(f64),
     String(Rc<String>),
     List(Rc<RefCell<Vec<Value>>>),
+    Map(Rc<RefCell<HashMap<String, Value>>>),
     Range(Box<Range>),
 }
 
 impl Value {
     pub fn dbg_display(&self) -> String {
         match self {
-            Value::Integer(i) => format!("(int {})", i),
-            Value::Float(f) => format!("(float {})", f),
+            Value::Integer(i) => format!("int {}", i),
+            Value::Float(f) => format!("float {}", f),
             Value::String(s) => {
                 let s = if s.len() <= 6 {
                     s.to_string()
@@ -120,12 +122,26 @@ impl Value {
                     format!("{}...", &s[..6])
                 };
                 let s = s.replace("\n", "\\n");
-                format!("(string \"{}\")", s)
+                format!("string \"{}\"", s)
             }
             Value::List(v) => {
-                format!("(list {})", dbg_display(&v.borrow()))
+                format!("list {}", dbg_display(&v.borrow()))
             }
-            Value::Range(r) => format!("(range {}, {})", r.start, r.end),
+            Value::Map(m) => {
+                let map = m.borrow();
+                let items = map
+                    .iter()
+                    .take(2)
+                    .map(|(k, v)| format!("{}: {}", k, v.dbg_display()))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                if map.len() > 2 {
+                    format!("map {{{}, ...}}", items)
+                } else {
+                    format!("map {{{}}}", items)
+                }
+            }
+            Value::Range(r) => format!("range {}, {}", r.start, r.end),
         }
     }
 
@@ -175,17 +191,26 @@ impl From<Vec<Value>> for Value {
     }
 }
 
+pub fn arg_display(values: &[Value]) -> String {
+    let items = values
+        .iter()
+        .map(|item| item.dbg_display())
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("({})", items)
+}
+
 pub fn dbg_display(values: &[Value]) -> String {
     if values.is_empty() {
         "[]".to_string()
     } else {
         let items = values
             .iter()
-            .take(6)
+            .take(2)
             .map(|item| item.dbg_display())
             .collect::<Vec<String>>()
             .join(", ");
-        if values.len() > 6 {
+        if values.len() > 2 {
             format!("[{}, ...]", items)
         } else {
             format!("[{}]", items)

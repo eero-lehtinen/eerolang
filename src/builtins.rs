@@ -1,14 +1,48 @@
 use std::{cell::RefCell, io::Write, rc::Rc};
 
-use crate::tokenizer::{Range, Value, dbg_display};
+use crate::tokenizer::{Range, Value, arg_display};
 
-pub fn fn_ok() -> ProgramFnRes {
-    Ok(Value::Integer(1))
+macro_rules! arg_bail {
+    ($expected:expr, $args:expr) => {{
+        return Err(format!(
+            "Expects ({}), got {}",
+            $expected,
+            arg_display($args)
+        ));
+    }};
+}
+
+macro_rules! out_of_bounds_bail {
+    ($length:expr, $index:expr) => {{
+        return Err(format!(
+            "Index out of bounds (length: {}, index: {})",
+            $length, $index
+        ));
+    }};
+}
+
+macro_rules! fn_ok {
+    () => {
+        Ok(Value::Integer(1))
+    };
 }
 
 pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
     for (i, arg) in args.iter().enumerate() {
+        macro_rules! print_inner {
+            ($item:expr) => {
+                match $item {
+                    Value::Integer(ii) => write!(&mut w, "{}", ii).unwrap(),
+                    Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
+                    Value::String(ss) => write!(&mut w, "{}", ss).unwrap(),
+                    Value::List(_) => write!(&mut w, "(list...)").unwrap(),
+                    Value::Map(_) => write!(&mut w, "(map...)").unwrap(),
+                    Value::Range(r) => write!(&mut w, "(range {},{})", r.start, r.end).unwrap(),
+                }
+            };
+        }
+
         match arg {
             Value::Integer(i) => write!(&mut w, "{}", i).unwrap(),
             Value::Float(f) => write!(&mut w, "{}", f).unwrap(),
@@ -19,18 +53,24 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
             Value::List(l) => {
                 write!(&mut w, "[").unwrap();
                 for (j, item) in l.borrow().iter().enumerate() {
-                    match item {
-                        Value::Integer(ii) => write!(&mut w, "{}", ii).unwrap(),
-                        Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
-                        Value::String(ss) => write!(&mut w, "\"{}\"", ss).unwrap(),
-                        Value::List(_) => write!(&mut w, "<nested list>").unwrap(),
-                        Value::Range(r) => write!(&mut w, "(range {},{})", r.start, r.end).unwrap(),
-                    }
+                    print_inner!(item);
                     if j < l.borrow().len() - 1 {
                         print!(", ");
                     }
                 }
                 write!(&mut w, "]").unwrap();
+            }
+            Value::Map(m) => {
+                write!(&mut w, "{{").unwrap();
+                let map_ref = m.borrow();
+                for (j, (key, value)) in map_ref.iter().enumerate() {
+                    write!(&mut w, "\"{}\": ", key).unwrap();
+                    print_inner!(value);
+                    if j < map_ref.len() - 1 {
+                        write!(&mut w, ", ").unwrap();
+                    }
+                }
+                write!(&mut w, "}}").unwrap();
             }
         }
         if i < args.len() - 1 {
@@ -39,12 +79,12 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     }
     writeln!(&mut w).unwrap();
     w.flush().unwrap();
-    fn_ok()
+    fn_ok!()
 }
 
 pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     let [Value::String(filename)] = &args else {
-        return Err(format!("Expects (string), got {}", dbg_display(args)));
+        arg_bail!("string", args);
     };
 
     let content = std::fs::read_to_string(filename.as_ref())
@@ -55,10 +95,7 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
 
 pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
     let [Value::String(s), Value::String(delim)] = &args else {
-        return Err(format!(
-            "Expects (string, string), got {}",
-            dbg_display(args)
-        ));
+        arg_bail!("string, string", args);
     };
 
     let parts: Vec<Value> = s
@@ -71,7 +108,7 @@ pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
 
 pub fn builtin_parseint(args: &[Value]) -> ProgramFnRes {
     let [Value::String(s)] = &args else {
-        return Err(format!("Expects (string), got {}", dbg_display(args)));
+        arg_bail!("string", args);
     };
 
     let int_value = s
@@ -83,38 +120,20 @@ pub fn builtin_parseint(args: &[Value]) -> ProgramFnRes {
 
 pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     if args.len() < 2 || args.len() > 3 {
-        return Err(format!(
-            "Expects (string, int, opt int), got {}",
-            dbg_display(args)
-        ));
+        arg_bail!("string, int, opt int", args);
     }
     let string = match &args[0] {
         Value::String(s) => s,
-        _ => {
-            return Err(format!(
-                "Expects (string) as first argument, got {}",
-                args[0].dbg_display()
-            ));
-        }
+        _ => arg_bail!("string, int, opt int", args),
     };
     let start = match &args[1] {
         Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                args[1].dbg_display()
-            ));
-        }
+        _ => arg_bail!("string, int, opt int", args),
     };
     let mut end = if args.get(2).is_some() {
         match &args[2] {
             Value::Integer(i) => *i,
-            _ => {
-                return Err(format!(
-                    "Expects (int) as third argument, got {}",
-                    args[2].dbg_display()
-                ));
-            }
+            _ => arg_bail!("string, int, opt int", args),
         }
     } else {
         string.len() as i64
@@ -138,116 +157,78 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
 #[inline]
 pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
     let [target, value] = args else {
-        return Err(format!("Expects (list, value), got {}", dbg_display(args)));
+        arg_bail!("list, value", args);
     };
 
     match target {
         Value::List(l) => {
             l.borrow_mut().push(value.clone());
-            fn_ok()
+            fn_ok!()
         }
-        _ => Err(format!(
-            "Expects (list) as first argument, got {}",
-            target.dbg_display()
-        )),
+        _ => arg_bail!("list, value", args),
     }
 }
 
 pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
-    let [target, index, value] = args else {
-        return Err(format!(
-            "Expects (list, int, value), got {}",
-            dbg_display(args)
-        ));
-    };
-
-    let index = match &index {
-        Value::Integer(i) => *i as usize,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                index.dbg_display()
-            ));
-        }
+    let [target, index_or_key, value] = args else {
+        arg_bail!("list/map, int if list/string if map, value", args);
     };
 
     match target {
         Value::List(l) => {
+            let index = match &index_or_key {
+                Value::Integer(i) => *i as usize,
+                _ => arg_bail!("list/map, int if list/string if map, value", args),
+            };
             if index >= l.borrow().len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    l.borrow().len(),
-                    index
-                ));
+                out_of_bounds_bail!(l.borrow().len(), index);
             }
             l.borrow_mut()[index] = value.clone();
-            fn_ok()
+            fn_ok!()
         }
-        _ => Err(format!(
-            "Expects (list) as first argument, got {}",
-            target.dbg_display()
-        )),
+        _ => arg_bail!("list/map, int if list/string if map, value", args),
     }
 }
 
 #[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     let [target, index] = args else {
-        return Err(format!(
-            "Expects (list/string, int), got {}",
-            dbg_display(args)
-        ));
+        arg_bail!("list/string/map, int/string if map", args);
     };
 
     let index = match index {
         Value::Integer(i) => *i as usize,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                index.dbg_display()
-            ));
-        }
+        _ => arg_bail!("list/string/map, int/string if map", args),
     };
 
     match target {
         Value::List(l) => {
             if index >= l.borrow().len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    l.borrow().len(),
-                    index
-                ));
+                out_of_bounds_bail!(l.borrow().len(), index);
             }
             Ok(l.borrow()[index].clone())
         }
         Value::String(s) => {
             if index >= s.len() {
-                return Err(format!(
-                    "Index out of bounds (length: {}, index: {})",
-                    s.len(),
-                    index
-                ));
+                out_of_bounds_bail!(s.len(), index);
             }
             Ok(Value::String(Rc::from(
                 s.chars().nth(index).unwrap().to_string(),
             )))
         }
-        _ => Err(format!(
-            "Expects (list/string) as first argument, got {}",
-            target.dbg_display()
-        )),
+        _ => arg_bail!("list/string/map, int/string if map", args),
     }
 }
 
 pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     let [len] = args else {
-        return Err(format!("Expects (list/string), got {}", dbg_display(args)));
+        arg_bail!("list/string/map", args);
     };
 
     let len = match &len {
         Value::String(s) => s.len() as i64,
         Value::List(l) => l.borrow().len() as i64,
-        _ => return Err(format!("Expects (list/string), got {}", len.dbg_display())),
+        _ => arg_bail!("list/string/map", args),
     };
 
     Ok(Value::Integer(len))
@@ -255,27 +236,17 @@ pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
 
 pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
     let [a, b] = args else {
-        return Err(format!("Expects (int, int), got {}", dbg_display(args)));
+        arg_bail!("int, int", args);
     };
 
     let a = match a {
         Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as first argument, got {}",
-                a.dbg_display()
-            ));
-        }
+        _ => arg_bail!("int, int", args),
     };
 
     let b = match b {
         Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as second argument, got {}",
-                b.dbg_display()
-            ));
-        }
+        _ => arg_bail!("int, int", args),
     };
 
     Ok(Value::Integer(a % b))
@@ -283,17 +254,12 @@ pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
 
 pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
     if args.is_empty() || args.len() > 2 {
-        return Err(format!("Expects (int, opt int), got {}", dbg_display(args)));
+        arg_bail!("int, opt int", args);
     };
 
     let mut start = match &args[0] {
         Value::Integer(i) => *i,
-        _ => {
-            return Err(format!(
-                "Expects (int) as first argument, got {}",
-                args[0].dbg_display()
-            ));
-        }
+        _ => arg_bail!("int, opt int", args),
     };
 
     let end = match args.get(1) {
@@ -303,12 +269,7 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
             start = 0;
             tmp
         }
-        _ => {
-            return Err(format!(
-                "Expects (opt int) as second argument, got {}",
-                args[1].dbg_display()
-            ));
-        }
+        _ => arg_bail!("int, opt int", args),
     };
 
     Ok(Value::Range(Box::new(Range { start, end })))
