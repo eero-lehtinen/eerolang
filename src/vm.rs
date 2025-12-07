@@ -280,7 +280,7 @@ impl<'a> Vm<'a> {
             }
             trace!(
                 "SP {}\n {}",
-                self.stack_ptr,
+                self.stack_ptr - self.sp_start,
                 crate::tokenizer::dbg_display(&self.memory[self.sp_start..self.stack_ptr + 1])
             );
             self.inst_ptr += 1;

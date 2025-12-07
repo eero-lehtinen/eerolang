@@ -224,6 +224,55 @@ impl<'a> Compilation<'a> {
         }
     }
 
+    fn compile_expression(
+        &mut self,
+        expr: &AstNode,
+        dst_suggestion: Addr,
+        ctx: &mut BlockCtx,
+    ) -> (Addr, Option<Value>) {
+        match &expr.kind {
+            AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
+            AstNodeKind::Variable(name) => (self.variable_offset(name, expr, ctx, false), None),
+            AstNodeKind::BinaryOp(left, op, right) => {
+                let (laddr, lval) = self.compile_expression(left, RESULT_REG1, ctx);
+                let (raddr, rval) = self.compile_expression(right, RESULT_REG2, ctx);
+
+                // Constant folding for literals
+                if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
+                    let folded_value =
+                        binary_op(|err| self.fatal(err, expr), &lit_left, *op, &lit_right);
+                    return (self.make_literal(&folded_value), Some(folded_value));
+                }
+
+                let binop_data = BinaryOpData {
+                    dst: dst_suggestion,
+                    src1: laddr,
+                    src2: raddr,
+                };
+                let inst = match op {
+                    Operator::Add => Inst::Add(binop_data),
+                    Operator::Sub => Inst::Sub(binop_data),
+                    Operator::Mul => Inst::Mul(binop_data),
+                    Operator::Div => Inst::Div(binop_data),
+                    Operator::Lt => Inst::Lt(binop_data),
+                    Operator::Gt => Inst::Gt(binop_data),
+                    Operator::Lte => Inst::Lte(binop_data),
+                    Operator::Gte => Inst::Gte(binop_data),
+                    Operator::Eq => Inst::Eq(binop_data),
+                    Operator::Neq => Inst::Neq(binop_data),
+                };
+
+                self.push_instruction(inst, expr);
+                (dst_suggestion, None)
+            }
+            AstNodeKind::FunctionCall(..) => {
+                self.compile_function_call(dst_suggestion, expr, ctx);
+                (dst_suggestion, None)
+            }
+            _ => todo!(),
+        }
+    }
+
     fn compile_function_definition(&mut self, node: &'a AstNode) {
         let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
             unreachable!();
@@ -246,6 +295,7 @@ impl<'a> Compilation<'a> {
 
         let fn_start_ip = self.cur_inst_ptr();
         let mut ctx = self.block_start(body);
+        let mut fn_ctx = FunctionCtx::new(ctx.frame_ptr);
 
         // Store return address in a stack variable.
         let return_addr_var_addr =
@@ -271,7 +321,7 @@ impl<'a> Compilation<'a> {
             );
         }
 
-        self.compile_block(body, &mut ctx, &mut LoopCtx::default());
+        self.compile_block(body, &mut ctx, &mut LoopCtx::default(), &mut fn_ctx);
 
         // Default return value is 1
         self.push_instruction(
@@ -282,13 +332,23 @@ impl<'a> Compilation<'a> {
             node,
         );
 
+        // Store return address back to the return address register.
+        // TODO: This might not be needed if we clean up the stack in the caller.
+        self.push_instruction(
+            Inst::LoadAddr {
+                dst: FN_CALL_RETURN_ADDR_REG,
+                src: return_addr_var_addr,
+            },
+            node,
+        );
+
         // Clean up stack frame.
         self.block_end(body, ctx);
 
         // Jump back to return address.
         self.push_instruction(
             Inst::JumpAddr {
-                target: return_addr_var_addr,
+                target: FN_CALL_RETURN_ADDR_REG,
             },
             node,
         );
@@ -300,6 +360,47 @@ impl<'a> Compilation<'a> {
 
         self.functions
             .insert(name.clone(), (fn_start_ip, args_required));
+    }
+
+    fn compile_return(&mut self, node: &'a AstNode, ctx: &mut BlockCtx, fn_ctx: &mut FunctionCtx) {
+        let AstNodeKind::Return(expr) = &node.kind else {
+            unreachable!();
+        };
+        let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG, ctx);
+        if expr_addr != FN_RETURN_VALUE_REG {
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst: FN_RETURN_VALUE_REG,
+                    src: expr_addr,
+                },
+                node,
+            );
+        }
+
+        // Store return address back to the return address register.
+        // TODO: This might not be needed if we clean up the stack in the caller.
+        let return_addr_var_addr = self.variable_offset(FN_CALL_RETURN_ADDR_VAR, node, ctx, false);
+        self.push_instruction(
+            Inst::LoadAddr {
+                dst: FN_CALL_RETURN_ADDR_REG,
+                src: return_addr_var_addr,
+            },
+            node,
+        );
+
+        // Clean up stack frame.
+        let sub_sp = self.cur_stack_ptr_offset - fn_ctx.frame_ptr;
+        if sub_sp > 0 {
+            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+        }
+
+        // Jump back to return address.
+        self.push_instruction(
+            Inst::JumpAddr {
+                target: FN_CALL_RETURN_ADDR_REG,
+            },
+            node,
+        );
     }
 
     fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut BlockCtx) {
@@ -389,56 +490,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_expression(
-        &mut self,
-        expr: &AstNode,
-        dst_suggestion: Addr,
-        ctx: &mut BlockCtx,
-    ) -> (Addr, Option<Value>) {
-        match &expr.kind {
-            AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
-            AstNodeKind::Variable(name) => (self.variable_offset(name, expr, ctx, false), None),
-            AstNodeKind::BinaryOp(left, op, right) => {
-                let (laddr, lval) = self.compile_expression(left, RESULT_REG1, ctx);
-                let (raddr, rval) = self.compile_expression(right, RESULT_REG2, ctx);
-
-                // Constant folding for literals
-                if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
-                    let folded_value =
-                        binary_op(|err| self.fatal(err, expr), &lit_left, *op, &lit_right);
-                    return (self.make_literal(&folded_value), Some(folded_value));
-                }
-
-                let binop_data = BinaryOpData {
-                    dst: dst_suggestion,
-                    src1: laddr,
-                    src2: raddr,
-                };
-                let inst = match op {
-                    Operator::Add => Inst::Add(binop_data),
-                    Operator::Sub => Inst::Sub(binop_data),
-                    Operator::Mul => Inst::Mul(binop_data),
-                    Operator::Div => Inst::Div(binop_data),
-                    Operator::Lt => Inst::Lt(binop_data),
-                    Operator::Gt => Inst::Gt(binop_data),
-                    Operator::Lte => Inst::Lte(binop_data),
-                    Operator::Gte => Inst::Gte(binop_data),
-                    Operator::Eq => Inst::Eq(binop_data),
-                    Operator::Neq => Inst::Neq(binop_data),
-                };
-
-                self.push_instruction(inst, expr);
-                (dst_suggestion, None)
-            }
-            AstNodeKind::FunctionCall(..) => {
-                self.compile_function_call(dst_suggestion, expr, ctx);
-                (dst_suggestion, None)
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn compile_for_loop(&mut self, node: &'a AstNode) {
+    fn compile_for_loop(&mut self, node: &'a AstNode, fn_ctx: &mut FunctionCtx) {
         let AstNodeKind::ForLoop(index_var, key_var, item_var, collection, body) = &node.kind
         else {
             unreachable!();
@@ -511,7 +563,7 @@ impl<'a> Compilation<'a> {
             for_ctx.initialized_vars += 1;
         }
 
-        self.compile_block(body, &mut for_ctx, &mut loop_ctx);
+        self.compile_block(body, &mut for_ctx, &mut loop_ctx, fn_ctx);
 
         self.push_instruction(Inst::Incr { dst: index_addr }, node);
         self.push_instruction(
@@ -570,6 +622,7 @@ impl<'a> Compilation<'a> {
         node: &'a AstNode,
         ctx: &mut BlockCtx,
         loop_ctx: &mut LoopCtx,
+        fn_ctx: &mut FunctionCtx,
     ) {
         let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
             unreachable!();
@@ -580,9 +633,9 @@ impl<'a> Compilation<'a> {
 
         if let Some(const_cond_true) = const_cond_true {
             if const_cond_true {
-                self.compile_block_full(block, loop_ctx);
+                self.compile_block_full(block, loop_ctx, fn_ctx);
             } else if let Some(else_block) = else_block {
-                self.compile_block_full(else_block, loop_ctx);
+                self.compile_block_full(else_block, loop_ctx, fn_ctx);
             }
             return;
         }
@@ -597,7 +650,7 @@ impl<'a> Compilation<'a> {
             node,
         );
 
-        self.compile_block_full(block, loop_ctx);
+        self.compile_block_full(block, loop_ctx, fn_ctx);
 
         if let Some(else_block) = else_block {
             let else_jump_ip = self.cur_inst_ptr();
@@ -607,7 +660,7 @@ impl<'a> Compilation<'a> {
             let else_start_ip = self.cur_inst_ptr();
             self.instructions[if_jump_ip].set_jump_target(else_start_ip);
 
-            self.compile_block_full(else_block, loop_ctx);
+            self.compile_block_full(else_block, loop_ctx, fn_ctx);
 
             let after_else_ip = self.cur_inst_ptr();
             self.instructions[else_jump_ip].set_jump_target(after_else_ip);
@@ -648,13 +701,24 @@ impl<'a> Compilation<'a> {
         self.scope_vars.pop();
     }
 
-    fn compile_block_full(&mut self, block: &'a AstNode, loop_ctx: &mut LoopCtx) {
+    fn compile_block_full(
+        &mut self,
+        block: &'a AstNode,
+        loop_ctx: &mut LoopCtx,
+        fn_ctx: &mut FunctionCtx,
+    ) {
         let mut ctx = self.block_start(block);
-        self.compile_block(block, &mut ctx, loop_ctx);
+        self.compile_block(block, &mut ctx, loop_ctx, fn_ctx);
         self.block_end(block, ctx);
     }
 
-    fn compile_block(&mut self, block: &'a AstNode, ctx: &mut BlockCtx, loop_ctx: &mut LoopCtx) {
+    fn compile_block(
+        &mut self,
+        block: &'a AstNode,
+        ctx: &mut BlockCtx,
+        loop_ctx: &mut LoopCtx,
+        fn_ctx: &mut FunctionCtx,
+    ) {
         let AstNodeKind::Block(b, _) = &block.kind else {
             self.fatal("Expected block node", block);
         };
@@ -663,10 +727,13 @@ impl<'a> Compilation<'a> {
                 AstNodeKind::Assign(..) => self.compile_assignment(node, ctx),
                 AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
                 AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node, ctx),
-                AstNodeKind::ForLoop(..) => self.compile_for_loop(node),
-                AstNodeKind::IfStatement(..) => self.compile_if_statement(node, ctx, loop_ctx),
+                AstNodeKind::Return(..) => self.compile_return(node, ctx, fn_ctx),
+                AstNodeKind::ForLoop(..) => self.compile_for_loop(node, fn_ctx),
                 AstNodeKind::Continue => self.compile_continue(node, loop_ctx),
                 AstNodeKind::Break => self.compile_break(node, loop_ctx),
+                AstNodeKind::IfStatement(..) => {
+                    self.compile_if_statement(node, ctx, loop_ctx, fn_ctx)
+                }
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }
@@ -708,12 +775,27 @@ impl LoopCtx {
     }
 }
 
+#[derive(Default)]
+struct FunctionCtx {
+    frame_ptr: u32,
+}
+
+impl FunctionCtx {
+    fn new(frame_ptr: u32) -> Self {
+        FunctionCtx { frame_ptr }
+    }
+}
+
 #[allow(dead_code)]
 pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
     let mut ctx = c.block_start(block);
-    let mut loop_ctx = LoopCtx::default();
-    c.compile_block(block, &mut ctx, &mut loop_ctx);
+    c.compile_block(
+        block,
+        &mut ctx,
+        &mut LoopCtx::default(),
+        &mut FunctionCtx::default(),
+    );
     c.block_end(block, ctx);
     for (i, ins) in c.instructions.iter().enumerate() {
         trace!("{:4}: {:?}", i, ins);

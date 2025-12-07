@@ -23,6 +23,7 @@ pub enum TokenKind {
     KeywordContinue,
     KeywordBreak,
     KeywordFn,
+    KeywordReturn,
 }
 
 impl Display for TokenKind {
@@ -44,6 +45,7 @@ impl Display for TokenKind {
             TokenKind::KeywordContinue => write!(f, "continue"),
             TokenKind::KeywordBreak => write!(f, "break"),
             TokenKind::KeywordFn => write!(f, "fn"),
+            TokenKind::KeywordReturn => write!(f, "return"),
         }
     }
 }
@@ -442,6 +444,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                     "continue" => tok!("continue".len(), TokenKind::KeywordContinue),
                     "break" => tok!("break".len(), TokenKind::KeywordBreak),
                     "fn" => tok!("fn".len(), TokenKind::KeywordFn),
+                    "return" => tok!("return".len(), TokenKind::KeywordReturn),
                     ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }
