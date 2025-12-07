@@ -240,12 +240,14 @@ impl<'a> Compilation<'a> {
         }
 
         let fn_skip_jump_ip = self.cur_inst_ptr();
-        // Placeholder
+        // Function instructions are defined "in the middle" of the instructions so we need to skip
+        // over it to make top level code work correctly.
         self.push_instruction(Inst::Jump { target: 0 }, node);
 
         let fn_start_ip = self.cur_inst_ptr();
         let mut ctx = self.block_start(body);
 
+        // Store return address in a stack variable.
         let return_addr_var_addr =
             self.variable_offset(FN_CALL_RETURN_ADDR_VAR, node, &mut ctx, true);
         self.push_instruction(
@@ -256,6 +258,7 @@ impl<'a> Compilation<'a> {
             node,
         );
 
+        // Load arguments from argument registers to stack variables
         for (arg_idx, arg_name) in args.iter().enumerate() {
             let arg_addr = self.variable_offset(arg_name, node, &mut ctx, true);
             let arg_reg = Addr::Abs(ARG_REG_START + arg_idx as u32);
@@ -270,6 +273,7 @@ impl<'a> Compilation<'a> {
 
         self.compile_block(body, &mut ctx, &mut LoopCtx::default());
 
+        // Default return value is 1
         self.push_instruction(
             Inst::LoadInt {
                 dst: FN_RETURN_VALUE_REG,
@@ -278,8 +282,10 @@ impl<'a> Compilation<'a> {
             node,
         );
 
+        // Clean up stack frame.
         self.block_end(body, ctx);
 
+        // Jump back to return address.
         self.push_instruction(
             Inst::JumpAddr {
                 target: return_addr_var_addr,
@@ -355,6 +361,7 @@ impl<'a> Compilation<'a> {
             }
 
             let after_call_ip = self.cur_inst_ptr() + 2;
+            // Store return address.
             self.push_instruction(
                 Inst::LoadInt {
                     dst: FN_CALL_RETURN_ADDR_REG,
@@ -362,12 +369,14 @@ impl<'a> Compilation<'a> {
                 },
                 node,
             );
+            // Jump to the function.
             self.push_instruction(
                 Inst::Jump {
                     target: fn_start_ip,
                 },
                 node,
             );
+            // Load return value to the correct location.
             self.push_instruction(
                 Inst::LoadAddr {
                     dst,
