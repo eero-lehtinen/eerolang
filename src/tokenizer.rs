@@ -11,8 +11,6 @@ pub enum TokenKind {
     Operator(Operator),
     LParen,
     RParen,
-    LSquareParen,
-    RSquareParen,
     LBrace,
     RBrace,
     Comma,
@@ -31,8 +29,6 @@ impl Display for TokenKind {
             TokenKind::Operator(op) => write!(f, "{}", op.dbg_display()),
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),
-            TokenKind::LSquareParen => write!(f, "["),
-            TokenKind::RSquareParen => write!(f, "]"),
             TokenKind::LBrace => write!(f, "{{"),
             TokenKind::RBrace => write!(f, "}}"),
             TokenKind::Comma => write!(f, ","),
@@ -100,13 +96,26 @@ impl Operator {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MapValue {
+    pub inner: HashMap<Rc<String>, Value>,
+    // Created on demand for iteration
+    pub iteration_keys: Rc<RefCell<Vec<Value>>>,
+}
+
+impl PartialEq for MapValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Integer(i64),
     Float(f64),
     String(Rc<String>),
     List(Rc<RefCell<Vec<Value>>>),
-    Map(Rc<RefCell<HashMap<String, Value>>>),
+    Map(Rc<RefCell<MapValue>>),
     Range(Box<Range>),
 }
 
@@ -130,12 +139,13 @@ impl Value {
             Value::Map(m) => {
                 let map = m.borrow();
                 let items = map
+                    .inner
                     .iter()
                     .take(2)
                     .map(|(k, v)| format!("{}: {}", k, v.dbg_display()))
                     .collect::<Vec<String>>()
                     .join(", ");
-                if map.len() > 2 {
+                if map.inner.len() > 2 {
                     format!("map {{{}, ...}}", items)
                 } else {
                     format!("map {{{}}}", items)
@@ -206,11 +216,11 @@ pub fn dbg_display(values: &[Value]) -> String {
     } else {
         let items = values
             .iter()
-            .take(2)
+            .take(3)
             .map(|item| item.dbg_display())
             .collect::<Vec<String>>()
             .join(", ");
-        if values.len() > 2 {
+        if values.len() > 3 {
             format!("[{}, ...]", items)
         } else {
             format!("[{}]", items)
@@ -333,8 +343,6 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
             }
             '(' => tok!(1, TokenKind::LParen),
             ')' => tok!(1, TokenKind::RParen),
-            '[' => tok!(1, TokenKind::LSquareParen),
-            ']' => tok!(1, TokenKind::RSquareParen),
             '{' => tok!(1, TokenKind::LBrace),
             '}' => tok!(1, TokenKind::RBrace),
             ',' => tok!(1, TokenKind::Comma),

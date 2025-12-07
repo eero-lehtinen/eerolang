@@ -29,14 +29,18 @@ pub enum Inst {
         dst: Addr,
         src: Addr,
     },
-    LoadFromCollection {
+    InitMapIterationList {
+        src: Addr,
+    },
+    LoadIterationKey {
         dst: Addr,
-        collection: Addr,
+        src: Addr,
         index: Addr,
     },
-    PushToCollection {
-        collection: Addr,
-        value: Addr,
+    LoadCollectionItem {
+        dst: Addr,
+        src: Addr,
+        key: Addr,
     },
     AddStackPointer {
         value: u32,
@@ -57,11 +61,6 @@ pub enum Inst {
     Incr {
         dst: Addr,
     },
-    JumpIfNotInRange {
-        target: usize,
-        range: Addr,
-        src: Addr,
-    },
     Call {
         dst: Addr,
         func: usize,
@@ -81,7 +80,6 @@ impl Inst {
         match self {
             Inst::Jump { target } => *target = target_ip,
             Inst::JumpIfZero { target, .. } => *target = target_ip,
-            Inst::JumpIfNotInRange { target, .. } => *target = target_ip,
             _ => panic!("Cannot set jump target on non-jump instruction"),
         }
     }
@@ -90,6 +88,7 @@ impl Inst {
 pub const RESULT_REG1: Addr = Addr::Abs(0);
 pub const RESULT_REG2: Addr = Addr::Abs(1);
 pub const ZERO_REG: Addr = Addr::Abs(2);
+pub const SUCCESS_FLAG_REG: Addr = Addr::Abs(3);
 pub const EMPTY_LIST_REG: Addr = Addr::Abs(4);
 pub const ARG_REG_START: u32 = 10;
 pub const ARG_REG_COUNT: u32 = 10;
@@ -308,27 +307,6 @@ impl<'a> Compilation<'a> {
                 let dst = self.compile_function_call(name, args.len(), dst_suggestion, expr);
                 (dst, None)
             }
-            AstNodeKind::List(nodes) => {
-                self.push_instruction(
-                    Inst::Load {
-                        dst: dst_suggestion,
-                        src: EMPTY_LIST_REG,
-                    },
-                    expr,
-                );
-                for node in nodes.iter() {
-                    let (value_reg, _) =
-                        self.compile_expression(node, RESULT_REG1, initialized_vars);
-                    self.push_instruction(
-                        Inst::PushToCollection {
-                            collection: dst_suggestion,
-                            value: value_reg,
-                        },
-                        node,
-                    );
-                }
-                (dst_suggestion, None)
-            }
             _ => todo!(),
         }
     }
@@ -395,7 +373,7 @@ impl<'a> Compilation<'a> {
                     self.compile_function_args(args, initialized_vars);
                     self.compile_function_call(name, args.len(), RESULT_REG1, node);
                 }
-                AstNodeKind::ForLoop(index_var, item_var, collection, body) => {
+                AstNodeKind::ForLoop(index_var, key_var, item_var, collection, body) => {
                     let frame_ptr = self.block_start(body);
                     let mut initialized_vars = 0;
 
@@ -418,6 +396,8 @@ impl<'a> Compilation<'a> {
                         );
                     };
 
+                    self.push_instruction(Inst::InitMapIterationList { src: iterable_addr }, node);
+
                     let index_addr =
                         self.variable_offset(index_var, node, &mut initialized_vars, true);
                     self.push_instruction(
@@ -428,26 +408,35 @@ impl<'a> Compilation<'a> {
                         node,
                     );
 
-                    let for_cmp_ip = self.cur_inst_ptr();
+                    let for_load_key_ip = self.cur_inst_ptr();
+
+                    let key_addr = self.variable_offset(key_var, node, &mut initialized_vars, true);
                     self.push_instruction(
-                        Inst::JumpIfNotInRange {
-                            target: 0, // Placeholder, will be filled later
-                            range: iterable_addr,
-                            src: index_addr,
+                        Inst::LoadIterationKey {
+                            dst: key_addr,
+                            src: iterable_addr,
+                            index: index_addr,
                         },
                         node,
                     );
 
-                    if let Some(item_var) = item_var
-                        && item_var != "_"
-                    {
+                    let for_exit_jump_ip = self.cur_inst_ptr();
+                    self.push_instruction(
+                        Inst::JumpIfZero {
+                            target: 0, // Placeholder, will be filled later
+                            cond: SUCCESS_FLAG_REG,
+                        },
+                        node,
+                    );
+
+                    if let Some(item_var) = item_var {
                         let item_addr =
                             self.variable_offset(item_var, node, &mut initialized_vars, true);
                         self.push_instruction(
-                            Inst::LoadFromCollection {
+                            Inst::LoadCollectionItem {
                                 dst: item_addr,
-                                collection: iterable_addr,
-                                index: index_addr,
+                                src: iterable_addr,
+                                key: key_addr,
                             },
                             node,
                         );
@@ -458,10 +447,15 @@ impl<'a> Compilation<'a> {
                     self.compile_block(body, &mut initialized_vars);
 
                     self.push_instruction(Inst::Incr { dst: index_addr }, node);
-                    self.push_instruction(Inst::Jump { target: for_cmp_ip }, node);
+                    self.push_instruction(
+                        Inst::Jump {
+                            target: for_load_key_ip,
+                        },
+                        node,
+                    );
 
                     let loop_end_ip = self.cur_inst_ptr();
-                    self.instructions[for_cmp_ip].set_jump_target(loop_end_ip);
+                    self.instructions[for_exit_jump_ip].set_jump_target(loop_end_ip);
 
                     self.block_end(frame_ptr, body);
                 }

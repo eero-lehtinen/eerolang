@@ -1,13 +1,14 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, ops::DerefMut, rc::Rc};
 
 use crate::{
     ast_parser::fatal_generic,
-    builtins::{ProgramFn, builtin_get, builtin_push},
+    builtins::{ProgramFn, builtin_get},
     compiler::{
-        ARG_REG_START, Addr, Compilation, EMPTY_LIST_REG, Inst, RESERVED_REGS, STACK_SIZE, add_op,
-        div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op, neq_op, sub_op,
+        ARG_REG_START, Addr, Compilation, EMPTY_LIST_REG, Inst, RESERVED_REGS, STACK_SIZE,
+        SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op,
+        neq_op, sub_op,
     },
-    tokenizer::{Token, Value},
+    tokenizer::{MapValue, Token, Value},
 };
 
 #[allow(dead_code)]
@@ -78,7 +79,7 @@ impl<'a> Vm<'a> {
     #[inline]
     fn mem(&self, addr: Addr) -> usize {
         match addr {
-            Addr::Abs(reg) => reg as usize,
+            Addr::Abs(addr) => addr as usize,
             Addr::Stack(offset) => {
                 // trace!(
                 //     "Stack offset {}, pos: {}",
@@ -136,24 +137,83 @@ impl<'a> Vm<'a> {
                     // );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
-                &Inst::LoadFromCollection {
-                    dst,
-                    collection,
-                    index,
-                } => {
-                    let collection = self.mem_get(collection);
+                &Inst::LoadIterationKey { dst, src, index } => {
+                    let iterable = self.mem_get(src);
                     let index = self.mem_get(index);
-                    self.mem_set(
-                        dst,
-                        builtin_get(&[collection.clone(), index.clone()])
-                            .expect("builtin_get failed"),
-                    );
+                    let index = match index {
+                        Value::Integer(i) => *i,
+                        v => self.fatal(&format!(
+                            "Expected (int) as index, got {:?}",
+                            v.dbg_display()
+                        )),
+                    };
+
+                    let key: Option<Value> = match iterable {
+                        Value::List(l) => {
+                            let list = l.borrow();
+                            if index < 0 || index >= list.len() as i64 {
+                                None
+                            } else {
+                                Some((index as i64).into())
+                            }
+                        }
+                        Value::Range(r) => {
+                            if index < 0 || index >= (r.end - r.start) {
+                                None
+                            } else {
+                                Some((r.start + index).into())
+                            }
+                        }
+                        Value::Map(map) => {
+                            let map_borrow = map.borrow();
+                            let list = map_borrow.iteration_keys.borrow();
+                            if index < 0 || index >= list.len() as i64 {
+                                None
+                            } else {
+                                Some(list[index as usize].clone())
+                            }
+                        }
+                        v => self.fatal(&format!(
+                            "Expected (list/range/map) as iterable, got {:?}",
+                            v.dbg_display()
+                        )),
+                    };
+                    self.mem_set(SUCCESS_FLAG_REG, (key.is_some() as i64).into());
+                    if let Some(key) = key {
+                        self.mem_set(dst, key);
+                    }
                 }
-                &Inst::PushToCollection { collection, value } => {
-                    let collection = self.mem_get(collection);
-                    let value = self.mem_get(value);
-                    builtin_push(&[collection.clone(), value.clone()])
-                        .expect("builtin_push failed");
+                &Inst::LoadCollectionItem { dst, src, key } => {
+                    let iterable = self.mem_get(src);
+                    let key = self.mem_get(key);
+                    if let Value::Range(_) = iterable {
+                        self.mem_set(dst, key.clone());
+                    } else {
+                        self.mem_set(
+                            dst,
+                            builtin_get(&[iterable.clone(), key.clone()])
+                                .expect("builtin_get failed"),
+                        );
+                    }
+                }
+                &Inst::InitMapIterationList { src } => {
+                    // Other types get ignored
+                    let map = self.mem_get(src);
+                    if let Value::Map(map) = map {
+                        let mut map_borrow = map.borrow_mut();
+                        let MapValue {
+                            inner,
+                            iteration_keys,
+                        } = map_borrow.deref_mut();
+
+                        let mut iteration_keys_borrow = iteration_keys.borrow_mut();
+
+                        if iteration_keys_borrow.is_empty() {
+                            for key in inner.keys() {
+                                iteration_keys_borrow.push(Value::String(key.clone()));
+                            }
+                        }
+                    };
                 }
                 &Inst::AddStackPointer { value } => {
                     self.stack_ptr += value as usize;
@@ -191,40 +251,6 @@ impl<'a> Vm<'a> {
                         self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
                     }
                 },
-                &Inst::JumpIfNotInRange { target, range, src } => {
-                    // trace!(
-                    //     "JumpIfNotInRange to {} if {:?} not in {:?}",
-                    //     target,
-                    //     self.mem_get(src).dbg_display(),
-                    //     self.mem_get(range).dbg_display()
-                    // );
-                    let iterable_value = self.mem_get(range);
-                    let index = self.mem_get(src);
-
-                    let index = match index {
-                        Value::Integer(i) => *i,
-                        v => self.fatal(&format!(
-                            "Expected (int) as index, got {:?}",
-                            v.dbg_display()
-                        )),
-                    };
-
-                    let in_range = match iterable_value {
-                        Value::List(list_rc) => {
-                            let list = list_rc.borrow();
-                            index >= 0 && index < list.len() as i64
-                        }
-                        Value::Range(r) => index >= r.start && index < r.end,
-                        v => self.fatal(&format!(
-                            "Expected (list/range) as iterable, got {:?}",
-                            v.dbg_display()
-                        )),
-                    };
-                    if !in_range {
-                        self.inst_ptr = target;
-                        continue;
-                    }
-                }
                 &Inst::Jump { target } => {
                     self.inst_ptr = target;
                     continue;

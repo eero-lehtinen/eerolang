@@ -13,13 +13,18 @@ type VarName = String;
 pub enum AstNodeKind {
     Assign(VarName, Box<AstNode>),
     FunctionCall(VarName, Vec<AstNode>),
-    /// index, item, list, block
-    ForLoop(VarName, Option<VarName>, Box<AstNode>, Box<AstNode>),
+    /// index, key, item, list, block
+    ForLoop(
+        VarName,
+        VarName,
+        Option<VarName>,
+        Box<AstNode>,
+        Box<AstNode>,
+    ),
     /// condition, then block, else block
     IfStatement(Box<AstNode>, Box<AstNode>, Option<Box<AstNode>>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
     Block(Vec<AstNode>, Vec<String>),
-    List(Vec<AstNode>),
     Literal(Value),
     Variable(VarName),
 }
@@ -45,7 +50,9 @@ fn parse_list<'a, I: TokIter<'a>>(
             iter.next();
             break;
         }
-        let element = parse_expression(iter).unwrap();
+        let element = parse_expression(iter).unwrap_or_else(|| {
+            fatal("Expected expression in list", iter.peek().unwrap());
+        });
         elements.push(element);
         let next = iter.peek();
         if next.is_some_and(|t| t.kind == separator) {
@@ -130,8 +137,12 @@ fn parse_block<'a, I: TokIter<'a>>(
 
 // If the iterable is an expression, it needs to be stored somwhere.
 pub const FOR_ITERABLE_TEMP_VAR: &str = "__for_iterable_temp";
-// If an index variable has not been provided, use this.
+
+// Index needs to be stored somewhere.
 pub const FOR_INDEX_TEMP_VAR: &str = "__for_index_temp";
+
+// Even if not assigned to a variable, the key needs to be stored somewhere.
+pub const FOR_KEY_TEMP_VAR: &str = "__for_key_temp";
 
 fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let for_token = iter.next().unwrap();
@@ -140,8 +151,13 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
 
     let mut token = iter.next().unwrap();
     trace!("Parsing for loop, first token: {:?}", token);
-    let TokenKind::Ident(index_var) = &token.kind else {
+    let TokenKind::Ident(key_var) = &token.kind else {
         fatal("Expected identifier after 'for'", token);
+    };
+    let key_var = if key_var != "_" {
+        Some(key_var.clone())
+    } else {
+        None
     };
     token = iter.next().unwrap();
     trace!("Parsing for loop, second token: {:?}", token);
@@ -152,7 +168,11 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
             fatal("Expected identifier after comma in for loop", token);
         };
         token = iter.next().unwrap();
-        Some(item_var.clone())
+        if item_var != "_" {
+            Some(item_var.clone())
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -171,14 +191,10 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     );
 
     let iterable_var = format!("{}{}", FOR_ITERABLE_TEMP_VAR, token_idx);
+    let index_var = format!("{}{}", FOR_INDEX_TEMP_VAR, token_idx);
+    let key_var = key_var.unwrap_or_else(|| format!("{}{}", FOR_KEY_TEMP_VAR, token_idx));
 
-    let index_var = if index_var == "_" {
-        format!("{}{}", FOR_INDEX_TEMP_VAR, token_idx)
-    } else {
-        index_var.to_string()
-    };
-
-    let mut extra_vars = vec![iterable_var, index_var.clone()];
+    let mut extra_vars = vec![iterable_var, index_var.clone(), key_var.clone()];
     if let Some(item_var) = &item_var {
         extra_vars.push(item_var.clone());
     }
@@ -186,7 +202,13 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
 
     AstNode {
         token_idx,
-        kind: AstNodeKind::ForLoop(index_var, item_var, Box::new(collection_expr), body),
+        kind: AstNodeKind::ForLoop(
+            index_var,
+            key_var,
+            item_var,
+            Box::new(collection_expr),
+            body,
+        ),
     }
 }
 
@@ -268,14 +290,6 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
             }
             iter.next();
             Some(expr)
-        }
-        TokenKind::LSquareParen => {
-            iter.next();
-            let elements = parse_list(iter, TokenKind::Comma, TokenKind::RSquareParen);
-            Some(AstNode {
-                token_idx,
-                kind: AstNodeKind::List(elements),
-            })
         }
         _ => None,
     }
