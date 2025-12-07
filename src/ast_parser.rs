@@ -2,9 +2,8 @@ use std::iter::Peekable;
 
 use log::trace;
 
-use crate::{
-    SOURCE,
-    tokenizer::{Operator, Token, TokenKind, Value, find_source_char_col, report_source_pos},
+use crate::tokenizer::{
+    Operator, Token, TokenKind, Value, find_source_char_col, report_source_pos,
 };
 
 type VarName = String;
@@ -12,7 +11,10 @@ type VarName = String;
 #[derive(Debug)]
 pub enum AstNodeKind {
     Assign(VarName, Box<AstNode>),
+    /// name, arguments
     FunctionCall(VarName, Vec<AstNode>),
+    /// name, parameters, body
+    FunctionDefinition(VarName, Vec<VarName>, Box<AstNode>),
     /// index, key, item, list, block
     ForLoop(
         VarName,
@@ -120,7 +122,7 @@ fn parse_block<'a, I: TokIter<'a>>(
             iter.next();
             break;
         }
-        if let Some(node) = parse_statement(iter, is_loop) {
+        if let Some(node) = parse_statement(iter, top_level, is_loop) {
             block.push(node);
             if let AstNodeKind::Assign(var_name, _) = &block.last().unwrap().kind
                 && !local_vars.contains(var_name)
@@ -135,6 +137,52 @@ fn parse_block<'a, I: TokIter<'a>>(
         token_idx,
         kind: AstNodeKind::Block(block, local_vars),
     })
+}
+
+pub const FN_CALL_RETURN_ADDR_VAR: &str = "__fn_call_return_addr";
+
+fn parse_function_definition<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
+    let fn_token = iter.next().unwrap();
+    trace!("Parsing function definition, fn token: {:?}", fn_token);
+    let token_idx = fn_token.index;
+
+    let name_token = iter.next().unwrap();
+    let TokenKind::Ident(func_name) = &name_token.kind else {
+        fatal("Expected function name after 'fn'", name_token);
+    };
+    trace!("Parsing function definition, name: {}", func_name);
+
+    let lparen_token = iter.next().unwrap();
+    if lparen_token.kind != TokenKind::LParen {
+        fatal("Expected '(' after function name", lparen_token);
+    }
+
+    let params = parse_list(iter, TokenKind::Comma, TokenKind::RParen)
+        .into_iter()
+        .map(|param_node| {
+            if let AstNodeKind::Variable(var_name) = param_node.kind {
+                var_name
+            } else {
+                // TODO: allow showing error based on param_node.token_idx.
+                fatal(
+                    "Expected parameter name in parens of function definition",
+                    lparen_token,
+                );
+            }
+        })
+        .collect::<Vec<_>>();
+
+    trace!("Parsing function definition, parameters: {:?}", params);
+
+    let mut extra_vars = params.clone();
+    extra_vars.insert(0, FN_CALL_RETURN_ADDR_VAR.to_string());
+
+    let body = parse_block(iter, false, false, extra_vars);
+
+    AstNode {
+        token_idx,
+        kind: AstNodeKind::FunctionDefinition(func_name.clone(), params, body),
+    }
 }
 
 // If the iterable is an expression, it needs to be stored somwhere.
@@ -351,7 +399,11 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
     Some(left)
 }
 
-fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, is_loop: bool) -> Option<AstNode> {
+fn parse_statement<'a, I: TokIter<'a>>(
+    iter: &mut Peekable<I>,
+    top_level: bool,
+    is_loop: bool,
+) -> Option<AstNode> {
     let token = iter.peek()?;
 
     let statement = match &token.kind {
@@ -376,6 +428,7 @@ fn parse_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, is_loop: bool) ->
                 }
             }
         }
+        TokenKind::KeywordFn if top_level => parse_function_definition(iter),
         TokenKind::KeywordFor => parse_for_loop(iter),
         TokenKind::KeywordIf => parse_if_statement(iter, is_loop),
         TokenKind::KeywordContinue if is_loop => {

@@ -84,6 +84,21 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     fn_ok!()
 }
 
+const SLEEP_ARGS: u32 = 1;
+pub fn builtin_sleep(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("int", args);
+    };
+
+    let duration_ms = match arg {
+        Value::Integer(i) => *i,
+        _ => arg_bail!("int", args),
+    };
+
+    std::thread::sleep(std::time::Duration::from_millis(duration_ms as u64));
+    fn_ok!()
+}
+
 const READFILE_ARGS: u32 = 1;
 pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     let [Value::String(filename)] = &args else {
@@ -456,6 +471,7 @@ impl ArgsRequred {
 pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
     vec![
         ("print", builtin_print, ArgsRequred::Any),
+        ("sleep", builtin_sleep, ArgsRequred::Exact(SLEEP_ARGS)),
         (
             "readfile",
             builtin_readfile,

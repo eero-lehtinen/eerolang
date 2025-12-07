@@ -4,7 +4,7 @@ use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
-    ast_parser::{AstNode, AstNodeKind, fatal_generic},
+    ast_parser::{AstNode, AstNodeKind, FN_CALL_RETURN_ADDR_VAR, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
     tokenizer::{Operator, Token, Value},
 };
@@ -25,9 +25,13 @@ pub struct BinaryOpData {
 
 #[derive(Debug, Clone)]
 pub enum Inst {
-    Load {
+    LoadAddr {
         dst: Addr,
         src: Addr,
+    },
+    LoadInt {
+        dst: Addr,
+        value: i64,
     },
     InitMapIterationList {
         dst: Addr,
@@ -61,13 +65,16 @@ pub enum Inst {
     Incr {
         dst: Addr,
     },
-    Call {
+    CallBuiltin {
         dst: Addr,
         func: usize,
         arg_count: u8,
     },
     Jump {
         target: usize,
+    },
+    JumpAddr {
+        target: Addr,
     },
     JumpIfZero {
         target: usize,
@@ -102,13 +109,16 @@ pub const RESULT_REG2: Addr = reg(1);
 pub const ZERO_REG: Addr = reg(2);
 pub const SUCCESS_FLAG_REG: Addr = reg(3);
 pub const PLACEHOLDER_REG: Addr = reg(4);
+pub const FN_CALL_RETURN_ADDR_REG: Addr = reg(5);
+pub const FN_RETURN_VALUE_REG: Addr = reg(6);
 pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 10;
 pub const STACK_SIZE: u32 = 2 << 12;
 
 pub struct Compilation<'a> {
     pub instructions: Vec<Inst>,
     pub literals: Vec<(Value, Addr)>,
-    pub functions: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
+    pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
+    pub functions: HashMap<String, (usize, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
     pub scope_vars: Vec<Vec<&'a str>>,
@@ -117,14 +127,15 @@ pub struct Compilation<'a> {
 
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        let mut functions = HashMap::new();
+        let mut builtins = HashMap::new();
         for (i, (name, func, args)) in all_builtins().iter().enumerate() {
-            functions.insert(name.to_string(), (*func, i, *args));
+            builtins.insert(name.to_string(), (*func, i, *args));
         }
         Compilation {
             instructions: Vec::new(),
             literals: Vec::new(),
-            functions,
+            builtins,
+            functions: HashMap::new(),
             tokens,
             ip_to_token: Vec::new(),
             scope_vars: Vec::new(),
@@ -204,7 +215,7 @@ impl<'a> Compilation<'a> {
         let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
         if expr_addr != var_addr {
             self.push_instruction(
-                Inst::Load {
+                Inst::LoadAddr {
                     dst: var_addr,
                     src: expr_addr,
                 },
@@ -213,7 +224,79 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_function_args(&mut self, args: &[AstNode], ctx: &mut BlockCtx) {
+    fn compile_function_definition(&mut self, node: &'a AstNode) {
+        let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
+            unreachable!();
+        };
+
+        if all_builtins().iter().any(|(n, _, _)| n == name) {
+            self.fatal(
+                &format!("Cannot redefine built-in function '{}'", name),
+                node,
+            );
+        }
+        if self.functions.contains_key(name) {
+            self.fatal(&format!("Function '{}' is already defined", name), node);
+        }
+
+        let fn_skip_jump_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(Inst::Jump { target: 0 }, node);
+
+        let fn_start_ip = self.cur_inst_ptr();
+        let mut ctx = self.block_start(body);
+
+        let return_addr_var_addr =
+            self.variable_offset(FN_CALL_RETURN_ADDR_VAR, node, &mut ctx, true);
+        self.push_instruction(
+            Inst::LoadAddr {
+                dst: return_addr_var_addr,
+                src: FN_CALL_RETURN_ADDR_REG,
+            },
+            node,
+        );
+
+        for (arg_idx, arg_name) in args.iter().enumerate() {
+            let arg_addr = self.variable_offset(arg_name, node, &mut ctx, true);
+            let arg_reg = Addr::Abs(ARG_REG_START + arg_idx as u32);
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst: arg_addr,
+                    src: arg_reg,
+                },
+                node,
+            );
+        }
+
+        self.compile_block(body, &mut ctx, &mut LoopCtx::default());
+
+        self.push_instruction(
+            Inst::LoadInt {
+                dst: FN_RETURN_VALUE_REG,
+                value: 1,
+            },
+            node,
+        );
+
+        self.block_end(body, ctx);
+
+        self.push_instruction(
+            Inst::JumpAddr {
+                target: return_addr_var_addr,
+            },
+            node,
+        );
+
+        let fn_end_ip = self.cur_inst_ptr();
+        self.instructions[fn_skip_jump_ip].set_jump_target(fn_end_ip);
+
+        let args_required = ArgsRequred::Exact(args.len() as u32);
+
+        self.functions
+            .insert(name.clone(), (fn_start_ip, args_required));
+    }
+
+    fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut BlockCtx) {
         if args.len() > ARG_REG_COUNT as usize {
             self.fatal("Too many arguments in function call", &args[0]);
         }
@@ -222,7 +305,7 @@ impl<'a> Compilation<'a> {
             let (res_addr, _) = self.compile_expression(arg, arg_reg, ctx);
             if res_addr != arg_reg {
                 self.push_instruction(
-                    Inst::Load {
+                    Inst::LoadAddr {
                         dst: arg_reg,
                         src: res_addr,
                     },
@@ -232,60 +315,69 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    #[allow(dead_code)]
-    fn compile_function_args_internal(&mut self, args: &[u32]) {
-        if args.len() > ARG_REG_COUNT as usize {
-            panic!("Too many arguments in function call");
+    fn compile_function_call(&mut self, dst: Addr, node: &AstNode, ctx: &mut BlockCtx) {
+        let AstNodeKind::FunctionCall(name, args) = &node.kind else {
+            unreachable!();
+        };
+
+        macro_rules! unexpected_args {
+            ($args_req:expr) => {
+                self.fatal(
+                    &format!(
+                        "Function '{}' expects {} arguments, got {}",
+                        name,
+                        $args_req.describe(),
+                        args.len(),
+                    ),
+                    node,
+                );
+            };
         }
-        for (i, &arg_reg) in args.iter().enumerate() {
-            let target_reg = ARG_REG_START + i as u32;
+
+        self.compile_set_function_args(args, ctx);
+
+        if let Some((_, func_index, args_req)) = self.builtins.get(name) {
+            if !args_req.matches(args.len()) {
+                unexpected_args!(args_req);
+            }
+
             self.push_instruction(
-                Inst::Load {
-                    dst: Addr::Abs(target_reg),
-                    src: Addr::Abs(arg_reg),
+                Inst::CallBuiltin {
+                    dst,
+                    func: *func_index,
+                    arg_count: args.len() as u8,
                 },
-                &AstNode {
-                    kind: AstNodeKind::Literal(Value::Integer(0)),
-                    token_idx: 0,
-                },
-            );
-        }
-    }
-
-    fn compile_function_call(
-        &mut self,
-        name: &str,
-        arg_count: usize,
-        dst: Addr,
-        node: &AstNode,
-    ) -> Addr {
-        let (_, func_index, args_req) = self
-            .functions
-            .get(name)
-            .unwrap_or_else(|| self.fatal(&format!("Undefined function: {}", name), node));
-
-        if !args_req.matches(arg_count) {
-            self.fatal(
-                &format!(
-                    "Function '{}' expects {} arguments, got {}",
-                    name,
-                    args_req.describe(),
-                    arg_count,
-                ),
                 node,
             );
+        } else if let Some(&(fn_start_ip, args_req)) = self.functions.get(name) {
+            if !args_req.matches(args.len()) {
+                unexpected_args!(args_req);
+            }
+
+            let after_call_ip = self.cur_inst_ptr() + 2;
+            self.push_instruction(
+                Inst::LoadInt {
+                    dst: FN_CALL_RETURN_ADDR_REG,
+                    value: (after_call_ip as i64),
+                },
+                node,
+            );
+            self.push_instruction(
+                Inst::Jump {
+                    target: fn_start_ip,
+                },
+                node,
+            );
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst,
+                    src: FN_RETURN_VALUE_REG,
+                },
+                node,
+            );
+        } else {
+            self.fatal(&format!("Undefined function: {}", name), node);
         }
-
-        self.push_instruction(
-            Inst::Call {
-                dst,
-                func: *func_index,
-                arg_count: arg_count as u8,
-            },
-            node,
-        );
-
-        dst
     }
 
     fn compile_expression(
@@ -329,10 +421,9 @@ impl<'a> Compilation<'a> {
                 self.push_instruction(inst, expr);
                 (dst_suggestion, None)
             }
-            AstNodeKind::FunctionCall(name, args) => {
-                self.compile_function_args(args, ctx);
-                let dst = self.compile_function_call(name, args.len(), dst_suggestion, expr);
-                (dst, None)
+            AstNodeKind::FunctionCall(..) => {
+                self.compile_function_call(dst_suggestion, expr, ctx);
+                (dst_suggestion, None)
             }
             _ => todo!(),
         }
@@ -356,7 +447,7 @@ impl<'a> Compilation<'a> {
         let (addr, _) = self.compile_expression(collection, iterable_addr, &mut for_ctx);
         if addr != iterable_addr {
             self.push_instruction(
-                Inst::Load {
+                Inst::LoadAddr {
                     dst: iterable_addr,
                     src: addr,
                 },
@@ -368,7 +459,7 @@ impl<'a> Compilation<'a> {
 
         let index_addr = self.variable_offset(index_var, node, &mut for_ctx, true);
         self.push_instruction(
-            Inst::Load {
+            Inst::LoadAddr {
                 dst: index_addr,
                 src: ZERO_REG,
             },
@@ -561,10 +652,8 @@ impl<'a> Compilation<'a> {
         for node in b.iter() {
             match &node.kind {
                 AstNodeKind::Assign(..) => self.compile_assignment(node, ctx),
-                AstNodeKind::FunctionCall(name, args) => {
-                    self.compile_function_args(args, ctx);
-                    self.compile_function_call(name, args.len(), RESULT_REG1, node);
-                }
+                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
+                AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node, ctx),
                 AstNodeKind::ForLoop(..) => self.compile_for_loop(node),
                 AstNodeKind::IfStatement(..) => self.compile_if_statement(node, ctx, loop_ctx),
                 AstNodeKind::Continue => self.compile_continue(node, loop_ctx),
@@ -591,6 +680,7 @@ impl BlockCtx {
     }
 }
 
+#[derive(Default)]
 struct LoopCtx {
     frame_ptr: u32,
     stack_ptr: u32,
@@ -613,7 +703,7 @@ impl LoopCtx {
 pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
     let mut ctx = c.block_start(block);
-    let mut loop_ctx = LoopCtx::new(ctx.frame_ptr, ctx.frame_ptr);
+    let mut loop_ctx = LoopCtx::default();
     c.compile_block(block, &mut ctx, &mut loop_ctx);
     c.block_end(block, ctx);
     for (i, ins) in c.instructions.iter().enumerate() {

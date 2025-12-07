@@ -22,6 +22,7 @@ pub enum TokenKind {
     KeywordElse,
     KeywordContinue,
     KeywordBreak,
+    KeywordFn,
 }
 
 impl Display for TokenKind {
@@ -42,6 +43,7 @@ impl Display for TokenKind {
             TokenKind::KeywordElse => write!(f, "else"),
             TokenKind::KeywordContinue => write!(f, "continue"),
             TokenKind::KeywordBreak => write!(f, "break"),
+            TokenKind::KeywordFn => write!(f, "fn"),
         }
     }
 }
@@ -439,6 +441,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                     "else" => tok!("else".len(), TokenKind::KeywordElse),
                     "continue" => tok!("continue".len(), TokenKind::KeywordContinue),
                     "break" => tok!("break".len(), TokenKind::KeywordBreak),
+                    "fn" => tok!("fn".len(), TokenKind::KeywordFn),
                     ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }
