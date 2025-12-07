@@ -13,10 +13,12 @@ type VarName = Rc<str>;
 pub enum AstNodeKind {
     Assign(VarName, Box<AstNode>),
     FunctionCall(VarName, Vec<AstNode>),
-    /// index, item, list, body
-    ForLoop(VarName, Option<VarName>, Box<AstNode>, Vec<AstNode>),
-    IfStatement(Box<AstNode>, Vec<AstNode>, Vec<AstNode>),
+    /// index, item, list, block
+    ForLoop(VarName, Option<VarName>, Box<AstNode>, Box<AstNode>),
+    /// condition, then block, else block
+    IfStatement(Box<AstNode>, Box<AstNode>, Option<Box<AstNode>>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
+    Block(Vec<AstNode>),
     List(Vec<AstNode>),
     Literal(Value),
     Variable(VarName),
@@ -81,8 +83,8 @@ fn parse_function_call<'a, I: TokIter<'a>>(
     })
 }
 
-fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
-    let lbrace_token = iter.peek();
+fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Box<AstNode> {
+    let lbrace_token = iter.peek().cloned();
     if !lbrace_token.is_some_and(|t| t.kind == TokenKind::LBrace) {
         fatal("Expected '{' at start of block", iter.peek().unwrap());
     }
@@ -101,7 +103,10 @@ fn parse_block<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Vec<AstNode> {
             fatal("Unexpected token in block", token);
         }
     }
-    block
+    Box::new(AstNode {
+        token_idx: lbrace_token.unwrap().index,
+        kind: AstNodeKind::Block(block),
+    })
 }
 
 fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
@@ -168,11 +173,12 @@ fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
     let block = parse_block(iter);
 
     let else_token = iter.peek();
-    let mut else_block = Vec::new();
-    if else_token.is_some_and(|t| t.kind == TokenKind::KeywordElse) {
-        iter.next();
-        else_block = parse_block(iter);
-    }
+    let else_block = else_token
+        .is_some_and(|t| t.kind == TokenKind::KeywordElse)
+        .then(|| {
+            iter.next();
+            parse_block(iter)
+        });
     AstNode {
         token_idx,
         kind: AstNodeKind::IfStatement(Box::new(condition), block, else_block),
@@ -349,7 +355,7 @@ pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
     std::process::exit(1);
 }
 
-pub fn parse(tokens: &[Token]) -> Vec<AstNode> {
+pub fn parse(tokens: &[Token]) -> Box<AstNode> {
     let mut iter = tokens.iter().peekable();
 
     let mut block = Vec::new();
@@ -370,5 +376,8 @@ pub fn parse(tokens: &[Token]) -> Vec<AstNode> {
         );
     }
 
-    block
+    Box::new(AstNode {
+        token_idx: 0,
+        kind: AstNodeKind::Block(block),
+    })
 }

@@ -263,7 +263,10 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_block(&mut self, block: &[AstNode]) {
+    fn compile_block(&mut self, block: &AstNode) {
+        let AstNodeKind::Block(block) = &block.kind else {
+            self.fatal("Expected block node", block);
+        };
         for node in block.iter() {
             match &node.kind {
                 AstNodeKind::Assign(var, expr) => {
@@ -343,7 +346,7 @@ impl<'a> Compilation<'a> {
                     if let Some(const_cond_true) = const_cond_true {
                         if const_cond_true {
                             self.compile_block(block);
-                        } else if !else_block.is_empty() {
+                        } else if let Some(else_block) = else_block {
                             self.compile_block(else_block);
                         }
                         continue;
@@ -360,7 +363,7 @@ impl<'a> Compilation<'a> {
 
                     self.compile_block(block);
 
-                    if !else_block.is_empty() {
+                    if let Some(else_block) = else_block {
                         let else_jump_ip = self.cur_inst_ptr();
                         self.push_instruction(
                             Inst::Jump {
@@ -390,7 +393,7 @@ impl<'a> Compilation<'a> {
 }
 
 #[allow(dead_code)]
-pub fn compile<'a>(block: &[AstNode], tokens: &'a [Token]) -> Compilation<'a> {
+pub fn compile<'a>(block: &AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
     c.compile_block(block);
     for ins in c.instructions.iter() {
