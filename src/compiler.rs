@@ -196,6 +196,23 @@ impl<'a> Compilation<'a> {
         self.ip_to_token.push(node.token_idx);
     }
 
+    fn compile_assignment(&mut self, node: &AstNode, ctx: &mut BlockCtx) {
+        let AstNodeKind::Assign(var, expr) = &node.kind else {
+            unreachable!();
+        };
+        let var_addr = self.variable_offset(var, node, ctx, true);
+        let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
+        if expr_addr != var_addr {
+            self.push_instruction(
+                Inst::Load {
+                    dst: var_addr,
+                    src: expr_addr,
+                },
+                node,
+            );
+        }
+    }
+
     fn compile_function_args(&mut self, args: &[AstNode], ctx: &mut BlockCtx) {
         if args.len() > ARG_REG_COUNT as usize {
             self.fatal("Too many arguments in function call", &args[0]);
@@ -309,6 +326,185 @@ impl<'a> Compilation<'a> {
         }
     }
 
+    fn compile_for_loop(&mut self, node: &'a AstNode) {
+        let AstNodeKind::ForLoop(index_var, key_var, item_var, collection, body) = &node.kind
+        else {
+            unreachable!();
+        };
+        let mut for_ctx = self.block_start(body);
+        let mut loop_ctx = LoopCtx::new(for_ctx.frame_ptr, self.cur_stack_ptr_offset);
+
+        let iterable_addr = self.variable_offset(
+            self.scope_vars.last().unwrap().first().unwrap(),
+            node,
+            &mut for_ctx,
+            true,
+        );
+
+        let (addr, _) = self.compile_expression(collection, iterable_addr, &mut for_ctx);
+        if addr != iterable_addr {
+            self.push_instruction(
+                Inst::Load {
+                    dst: iterable_addr,
+                    src: addr,
+                },
+                collection,
+            );
+        };
+
+        self.push_instruction(Inst::InitMapIterationList { dst: iterable_addr }, node);
+
+        let index_addr = self.variable_offset(index_var, node, &mut for_ctx, true);
+        self.push_instruction(
+            Inst::Load {
+                dst: index_addr,
+                src: ZERO_REG,
+            },
+            node,
+        );
+
+        let for_load_key_ip = self.cur_inst_ptr();
+
+        let key_addr = self.variable_offset(key_var, node, &mut for_ctx, true);
+        self.push_instruction(
+            Inst::LoadIterationKey {
+                dst: key_addr,
+                src: iterable_addr,
+                index: index_addr,
+            },
+            node,
+        );
+
+        let for_exit_jump_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(
+            Inst::JumpIfZero {
+                target: 0,
+                cond: SUCCESS_FLAG_REG,
+            },
+            node,
+        );
+
+        if let Some(item_var) = item_var {
+            let item_addr = self.variable_offset(item_var, node, &mut for_ctx, true);
+            self.push_instruction(
+                Inst::LoadCollectionItem {
+                    dst: item_addr,
+                    src: iterable_addr,
+                    key: key_addr,
+                },
+                node,
+            );
+        } else {
+            for_ctx.initialized_vars += 1;
+        }
+
+        self.compile_block(body, &mut for_ctx, &mut loop_ctx);
+
+        self.push_instruction(Inst::Incr { dst: index_addr }, node);
+        self.push_instruction(
+            Inst::Jump {
+                target: for_load_key_ip,
+            },
+            node,
+        );
+
+        let loop_end_ip = self.cur_inst_ptr();
+        self.instructions[for_exit_jump_ip].set_jump_target(loop_end_ip);
+
+        for continue_ip in &loop_ctx.continues {
+            self.instructions[*continue_ip].set_incr_dst(index_addr);
+            self.instructions[*continue_ip + 1].set_jump_target(for_load_key_ip);
+        }
+
+        self.block_end(body, for_ctx);
+
+        let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
+
+        for break_ip in &loop_ctx.breaks {
+            self.instructions[*break_ip].set_jump_target(loop_end_after_sp_reset_ip);
+        }
+    }
+
+    fn compile_continue(&mut self, node: &'a AstNode, loop_ctx: &mut LoopCtx) {
+        let sub_sp = self.cur_stack_ptr_offset - loop_ctx.stack_ptr;
+        if sub_sp > 0 {
+            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+        }
+        loop_ctx.continues.push(self.cur_inst_ptr());
+        // Placeholder
+        self.push_instruction(
+            Inst::Incr {
+                dst: PLACEHOLDER_REG,
+            },
+            node,
+        );
+        // Placeholder
+        self.push_instruction(Inst::Jump { target: 0 }, node);
+    }
+
+    fn compile_break(&mut self, node: &'a AstNode, loop_ctx: &mut LoopCtx) {
+        let sub_sp = self.cur_stack_ptr_offset - loop_ctx.frame_ptr;
+        if sub_sp > 0 {
+            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+        }
+        loop_ctx.breaks.push(self.cur_inst_ptr());
+        // Placeholder
+        self.push_instruction(Inst::Jump { target: 0 }, node);
+    }
+
+    fn compile_if_statement(
+        &mut self,
+        node: &'a AstNode,
+        ctx: &mut BlockCtx,
+        loop_ctx: &mut LoopCtx,
+    ) {
+        let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
+            unreachable!();
+        };
+        let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, ctx);
+
+        let const_cond_true = cond_val.map(|v| !is_zero(|s| self.fatal(s, node), &v));
+
+        if let Some(const_cond_true) = const_cond_true {
+            if const_cond_true {
+                self.compile_block_full(block, loop_ctx);
+            } else if let Some(else_block) = else_block {
+                self.compile_block_full(else_block, loop_ctx);
+            }
+            return;
+        }
+
+        let if_jump_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(
+            Inst::JumpIfZero {
+                target: 0,
+                cond: cond_addr,
+            },
+            node,
+        );
+
+        self.compile_block_full(block, loop_ctx);
+
+        if let Some(else_block) = else_block {
+            let else_jump_ip = self.cur_inst_ptr();
+            // Placeholder
+            self.push_instruction(Inst::Jump { target: 0 }, node);
+
+            let else_start_ip = self.cur_inst_ptr();
+            self.instructions[if_jump_ip].set_jump_target(else_start_ip);
+
+            self.compile_block_full(else_block, loop_ctx);
+
+            let after_else_ip = self.cur_inst_ptr();
+            self.instructions[else_jump_ip].set_jump_target(after_else_ip);
+        } else {
+            let after_if_ip = self.cur_inst_ptr();
+            self.instructions[if_jump_ip].set_jump_target(after_if_ip);
+        }
+    }
+
     fn block_start(&mut self, node: &'a AstNode) -> BlockCtx {
         let AstNodeKind::Block(_, vars) = &node.kind else {
             self.fatal("Expected block node", node);
@@ -352,188 +548,15 @@ impl<'a> Compilation<'a> {
         };
         for node in b.iter() {
             match &node.kind {
-                AstNodeKind::Assign(var, expr) => {
-                    let var_addr = self.variable_offset(var, node, ctx, true);
-                    let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
-                    if expr_addr != var_addr {
-                        self.push_instruction(
-                            Inst::Load {
-                                dst: var_addr,
-                                src: expr_addr,
-                            },
-                            node,
-                        );
-                    }
-                }
+                AstNodeKind::Assign(..) => self.compile_assignment(node, ctx),
                 AstNodeKind::FunctionCall(name, args) => {
                     self.compile_function_args(args, ctx);
                     self.compile_function_call(name, args.len(), RESULT_REG1, node);
                 }
-                AstNodeKind::ForLoop(index_var, key_var, item_var, collection, body) => {
-                    let mut for_ctx = self.block_start(body);
-                    let mut loop_ctx = LoopCtx::new(for_ctx.frame_ptr, self.cur_stack_ptr_offset);
-
-                    let iterable_addr = self.variable_offset(
-                        self.scope_vars.last().unwrap().first().unwrap(),
-                        node,
-                        &mut for_ctx,
-                        true,
-                    );
-
-                    let (addr, _) =
-                        self.compile_expression(collection, iterable_addr, &mut for_ctx);
-                    if addr != iterable_addr {
-                        self.push_instruction(
-                            Inst::Load {
-                                dst: iterable_addr,
-                                src: addr,
-                            },
-                            collection,
-                        );
-                    };
-
-                    self.push_instruction(Inst::InitMapIterationList { dst: iterable_addr }, node);
-
-                    let index_addr = self.variable_offset(index_var, node, &mut for_ctx, true);
-                    self.push_instruction(
-                        Inst::Load {
-                            dst: index_addr,
-                            src: ZERO_REG,
-                        },
-                        node,
-                    );
-
-                    let for_load_key_ip = self.cur_inst_ptr();
-
-                    let key_addr = self.variable_offset(key_var, node, &mut for_ctx, true);
-                    self.push_instruction(
-                        Inst::LoadIterationKey {
-                            dst: key_addr,
-                            src: iterable_addr,
-                            index: index_addr,
-                        },
-                        node,
-                    );
-
-                    let for_exit_jump_ip = self.cur_inst_ptr();
-                    // Placeholder
-                    self.push_instruction(
-                        Inst::JumpIfZero {
-                            target: 0,
-                            cond: SUCCESS_FLAG_REG,
-                        },
-                        node,
-                    );
-
-                    if let Some(item_var) = item_var {
-                        let item_addr = self.variable_offset(item_var, node, &mut for_ctx, true);
-                        self.push_instruction(
-                            Inst::LoadCollectionItem {
-                                dst: item_addr,
-                                src: iterable_addr,
-                                key: key_addr,
-                            },
-                            node,
-                        );
-                    } else {
-                        for_ctx.initialized_vars += 1;
-                    }
-
-                    self.compile_block(body, &mut for_ctx, &mut loop_ctx);
-
-                    self.push_instruction(Inst::Incr { dst: index_addr }, node);
-                    self.push_instruction(
-                        Inst::Jump {
-                            target: for_load_key_ip,
-                        },
-                        node,
-                    );
-
-                    let loop_end_ip = self.cur_inst_ptr();
-                    self.instructions[for_exit_jump_ip].set_jump_target(loop_end_ip);
-
-                    for continue_ip in &loop_ctx.continues {
-                        self.instructions[*continue_ip].set_incr_dst(index_addr);
-                        self.instructions[*continue_ip + 1].set_jump_target(for_load_key_ip);
-                    }
-
-                    self.block_end(body, for_ctx);
-
-                    let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
-
-                    for break_ip in &loop_ctx.breaks {
-                        self.instructions[*break_ip].set_jump_target(loop_end_after_sp_reset_ip);
-                    }
-                }
-                AstNodeKind::IfStatement(condition, block, else_block) => {
-                    let (cond_addr, cond_val) =
-                        self.compile_expression(condition, RESULT_REG1, ctx);
-
-                    let const_cond_true = cond_val.map(|v| !is_zero(|s| self.fatal(s, node), &v));
-
-                    if let Some(const_cond_true) = const_cond_true {
-                        if const_cond_true {
-                            self.compile_block_full(block, loop_ctx);
-                        } else if let Some(else_block) = else_block {
-                            self.compile_block_full(else_block, loop_ctx);
-                        }
-                        continue;
-                    }
-
-                    let if_jump_ip = self.cur_inst_ptr();
-                    // Placeholder
-                    self.push_instruction(
-                        Inst::JumpIfZero {
-                            target: 0,
-                            cond: cond_addr,
-                        },
-                        node,
-                    );
-
-                    self.compile_block_full(block, loop_ctx);
-
-                    if let Some(else_block) = else_block {
-                        let else_jump_ip = self.cur_inst_ptr();
-                        // Placeholder
-                        self.push_instruction(Inst::Jump { target: 0 }, node);
-
-                        let else_start_ip = self.cur_inst_ptr();
-                        self.instructions[if_jump_ip].set_jump_target(else_start_ip);
-
-                        self.compile_block_full(else_block, loop_ctx);
-
-                        let after_else_ip = self.cur_inst_ptr();
-                        self.instructions[else_jump_ip].set_jump_target(after_else_ip);
-                    } else {
-                        let after_if_ip = self.cur_inst_ptr();
-                        self.instructions[if_jump_ip].set_jump_target(after_if_ip);
-                    }
-                }
-                AstNodeKind::Continue => {
-                    let sub_sp = self.cur_stack_ptr_offset - loop_ctx.stack_ptr;
-                    if sub_sp > 0 {
-                        self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
-                    }
-                    loop_ctx.continues.push(self.cur_inst_ptr());
-                    // Placeholder
-                    self.push_instruction(
-                        Inst::Incr {
-                            dst: PLACEHOLDER_REG,
-                        },
-                        node,
-                    );
-                    // Placeholder
-                    self.push_instruction(Inst::Jump { target: 0 }, node);
-                }
-                AstNodeKind::Break => {
-                    let sub_sp = self.cur_stack_ptr_offset - loop_ctx.frame_ptr;
-                    if sub_sp > 0 {
-                        self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
-                    }
-                    loop_ctx.breaks.push(self.cur_inst_ptr());
-                    // Placeholder
-                    self.push_instruction(Inst::Jump { target: 0 }, node);
-                }
+                AstNodeKind::ForLoop(..) => self.compile_for_loop(node),
+                AstNodeKind::IfStatement(..) => self.compile_if_statement(node, ctx, loop_ctx),
+                AstNodeKind::Continue => self.compile_continue(node, loop_ctx),
+                AstNodeKind::Break => self.compile_break(node, loop_ctx),
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }
