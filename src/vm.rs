@@ -147,7 +147,7 @@ impl<'a> Compilation<'a> {
         }
         for (i, arg) in args.iter().enumerate() {
             let arg_reg = Addr::Abs(ARG_REG_START + i as u32);
-            let res_reg = self.compile_expression(arg, arg_reg);
+            let (res_reg, _) = self.compile_expression(arg, arg_reg);
             if res_reg != arg_reg {
                 self.push_instruction(
                     Inst::Load {
@@ -204,27 +204,40 @@ impl<'a> Compilation<'a> {
         dst
     }
 
-    fn compile_expression(&mut self, expr: &AstNode, dst_suggestion: Addr) -> Addr {
+    fn compile_expression(
+        &mut self,
+        expr: &AstNode,
+        dst_suggestion: Addr,
+    ) -> (Addr, Option<Value>) {
         match &expr.kind {
-            AstNodeKind::Literal(value) => self.make_literal(value),
-            AstNodeKind::Variable(name) => self.variable_addr(name),
+            AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
+            AstNodeKind::Variable(name) => (self.variable_addr(name), None),
             AstNodeKind::BinaryOp(left, op, right) => {
-                let left_reg = self.compile_expression(left, RESULT_REG1);
-                let right_reg = self.compile_expression(right, RESULT_REG2);
+                let (lreg, lval) = self.compile_expression(left, RESULT_REG1);
+                let (rreg, rval) = self.compile_expression(right, RESULT_REG2);
+
+                // Constant folding for literals
+                if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
+                    let folded_value =
+                        binary_op(|s| self.fatal(s, expr), &lit_left, *op, &lit_right);
+                    return (self.make_literal(&folded_value), Some(folded_value));
+                }
+
                 self.push_instruction(
                     Inst::BinaryOp {
                         op: *op,
                         dst: dst_suggestion,
-                        src1: left_reg,
-                        src2: right_reg,
+                        src1: lreg,
+                        src2: rreg,
                     },
                     expr,
                 );
-                dst_suggestion
+                (dst_suggestion, None)
             }
             AstNodeKind::FunctionCall(name, args) => {
                 self.compile_function_args(args);
-                self.compile_function_call(name, args.len(), dst_suggestion, expr)
+                let dst = self.compile_function_call(name, args.len(), dst_suggestion, expr);
+                (dst, None)
             }
             AstNodeKind::List(nodes) => {
                 self.push_instruction(
@@ -235,7 +248,7 @@ impl<'a> Compilation<'a> {
                     expr,
                 );
                 for node in nodes.iter() {
-                    let value_reg = self.compile_expression(node, RESULT_REG1);
+                    let (value_reg, _) = self.compile_expression(node, RESULT_REG1);
                     self.push_instruction(
                         Inst::PushToCollection {
                             collection: dst_suggestion,
@@ -244,7 +257,7 @@ impl<'a> Compilation<'a> {
                         node,
                     );
                 }
-                dst_suggestion
+                (dst_suggestion, None)
             }
             _ => todo!(),
         }
@@ -255,7 +268,7 @@ impl<'a> Compilation<'a> {
             match &node.kind {
                 AstNodeKind::Assign(var, expr) => {
                     let var_reg = self.variable_addr(var);
-                    let expr_reg = self.compile_expression(expr, var_reg);
+                    let (expr_reg, _) = self.compile_expression(expr, var_reg);
                     if expr_reg != var_reg {
                         self.push_instruction(
                             Inst::Load {
@@ -271,7 +284,7 @@ impl<'a> Compilation<'a> {
                     self.compile_function_call(name, args.len(), RESULT_REG1, node);
                 }
                 AstNodeKind::ForLoop(index_var, item_var, collection, body) => {
-                    let iterable_addr = self.compile_expression(collection, RESULT_REG1);
+                    let (iterable_addr, _) = self.compile_expression(collection, RESULT_REG1);
 
                     self.push_instruction(Inst::Push { src: iterable_addr }, node);
                     self.push_instruction(Inst::Push { src: ZERO_REG }, node);
@@ -323,7 +336,18 @@ impl<'a> Compilation<'a> {
                     self.push_instruction(Inst::Pop { dst: TRASH_REG }, node);
                 }
                 AstNodeKind::IfStatement(condition, block, else_block) => {
-                    let cond_reg = self.compile_expression(condition, RESULT_REG1);
+                    let (cond_reg, cond_val) = self.compile_expression(condition, RESULT_REG1);
+
+                    let const_cond_true = cond_val.map(|v| !is_zero(|s| self.fatal(s, node), &v));
+
+                    if let Some(const_cond_true) = const_cond_true {
+                        if const_cond_true {
+                            self.compile_block(block);
+                        } else if !else_block.is_empty() {
+                            self.compile_block(else_block);
+                        }
+                        continue;
+                    }
 
                     let if_jump_ip = self.cur_inst_ptr();
                     self.push_instruction(
@@ -510,7 +534,12 @@ impl<'a> Vm<'a> {
                     src1,
                     src2,
                 } => {
-                    let res = self.binary_op(self.mem_get(src1), op, self.mem_get(src2));
+                    let res = binary_op(
+                        |s| self.fatal(s),
+                        self.mem_get(src1),
+                        op,
+                        self.mem_get(src2),
+                    );
                     self.mem_set(dst, res);
                 }
                 Inst::Call {
@@ -562,13 +591,7 @@ impl<'a> Vm<'a> {
                 }
                 Inst::JumpIfZero { target, cond } => {
                     let cond_value = &self.mem_get(cond);
-                    let is_zero = match cond_value {
-                        Value::Integer(i) => *i == 0,
-                        _ => self.fatal(&format!(
-                            "Expected (int) as condition, got {:?}",
-                            cond_value.dbg_display()
-                        )),
-                    };
+                    let is_zero = is_zero(|s| self.fatal(s), cond_value);
                     if is_zero {
                         self.ip = target;
                         continue;
@@ -590,70 +613,87 @@ impl<'a> Vm<'a> {
         };
         self.mem_set(dst, result);
     }
+}
 
-    fn binary_op(&self, left_val: &Value, op: Operator, right_val: &Value) -> Value {
-        macro_rules! unsupported {
-            () => {
-                self.fatal(&format!(
-                    "Cannot apply operator '{}' to operands {} and {})",
-                    op.dbg_display(),
-                    left_val.dbg_display(),
-                    right_val.dbg_display()
-                ))
-            };
+fn is_zero(err_fn: impl FnOnce(&str), cond_value: &Value) -> bool {
+    match cond_value {
+        Value::Integer(i) => *i == 0,
+        _ => {
+            err_fn(&format!(
+                "Expected (int) as condition, got {:?}",
+                cond_value.dbg_display()
+            ));
+            unreachable!()
         }
-
-        if let (Value::String(l), Value::String(r)) = (&left_val, &right_val) {
-            return match op {
-                Operator::Plus => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
-                Operator::Eq => Value::Integer((l == r) as i64),
-                Operator::Neq => Value::Integer((l != r) as i64),
-                _ => unsupported!(),
-            };
-        }
-
-        if let (Value::Integer(l), Value::Integer(r)) = (&left_val, &right_val) {
-            return Value::Integer(match op {
-                Operator::Plus => l + r,
-                Operator::Minus => l - r,
-                Operator::Multiply => l * r,
-                Operator::Divide => l / r,
-                Operator::Lt => (l < r) as i64,
-                Operator::Gt => (l > r) as i64,
-                Operator::Lte => (l <= r) as i64,
-                Operator::Gte => (l >= r) as i64,
-                Operator::Eq => (l == r) as i64,
-                Operator::Neq => (l != r) as i64,
-            });
-        }
-
-        // Promote to float if both weren't integers
-        let right_prom = if let Value::Integer(i) = &right_val {
-            Value::Float(*i as f64)
-        } else {
-            right_val.clone()
-        };
-        let left_prom = if let Value::Integer(i) = &left_val {
-            Value::Float(*i as f64)
-        } else {
-            left_val.clone()
-        };
-
-        if let (Value::Float(l), Value::Float(r)) = (&left_prom, &right_prom) {
-            return match op {
-                Operator::Plus => Value::Float(l + r),
-                Operator::Minus => Value::Float(l - r),
-                Operator::Multiply => Value::Float(l * r),
-                Operator::Divide => Value::Float(l / r),
-                Operator::Lt => Value::Integer((l < r) as i64),
-                Operator::Gt => Value::Integer((l > r) as i64),
-                Operator::Lte => Value::Integer((l <= r) as i64),
-                Operator::Gte => Value::Integer((l >= r) as i64),
-                Operator::Eq => Value::Integer((l == r) as i64),
-                Operator::Neq => Value::Integer((l != r) as i64),
-            };
-        }
-
-        unsupported!();
     }
+}
+
+fn binary_op(
+    err_fn: impl FnOnce(&str),
+    left_val: &Value,
+    op: Operator,
+    right_val: &Value,
+) -> Value {
+    let unsupported = || {
+        err_fn(&format!(
+            "Cannot apply operator '{}' to operands {} and {})",
+            op.dbg_display(),
+            left_val.dbg_display(),
+            right_val.dbg_display()
+        ));
+        unreachable!()
+    };
+
+    if let (Value::String(l), Value::String(r)) = (&left_val, &right_val) {
+        return match op {
+            Operator::Plus => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
+            Operator::Eq => Value::Integer((l == r) as i64),
+            Operator::Neq => Value::Integer((l != r) as i64),
+            _ => unsupported(),
+        };
+    }
+
+    if let (Value::Integer(l), Value::Integer(r)) = (&left_val, &right_val) {
+        return Value::Integer(match op {
+            Operator::Plus => l + r,
+            Operator::Minus => l - r,
+            Operator::Multiply => l * r,
+            Operator::Divide => l / r,
+            Operator::Lt => (l < r) as i64,
+            Operator::Gt => (l > r) as i64,
+            Operator::Lte => (l <= r) as i64,
+            Operator::Gte => (l >= r) as i64,
+            Operator::Eq => (l == r) as i64,
+            Operator::Neq => (l != r) as i64,
+        });
+    }
+
+    // Promote to float if both weren't integers
+    let right_prom = if let Value::Integer(i) = &right_val {
+        Value::Float(*i as f64)
+    } else {
+        right_val.clone()
+    };
+    let left_prom = if let Value::Integer(i) = &left_val {
+        Value::Float(*i as f64)
+    } else {
+        left_val.clone()
+    };
+
+    if let (Value::Float(l), Value::Float(r)) = (&left_prom, &right_prom) {
+        return match op {
+            Operator::Plus => Value::Float(l + r),
+            Operator::Minus => Value::Float(l - r),
+            Operator::Multiply => Value::Float(l * r),
+            Operator::Divide => Value::Float(l / r),
+            Operator::Lt => Value::Integer((l < r) as i64),
+            Operator::Gt => Value::Integer((l > r) as i64),
+            Operator::Lte => Value::Integer((l <= r) as i64),
+            Operator::Gte => Value::Integer((l >= r) as i64),
+            Operator::Eq => Value::Integer((l == r) as i64),
+            Operator::Neq => Value::Integer((l != r) as i64),
+        };
+    }
+
+    unsupported()
 }
