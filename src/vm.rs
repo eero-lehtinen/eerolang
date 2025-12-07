@@ -4,7 +4,7 @@ use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
-    ast_parser::{AstNode, AstNodeKind, fatal_generic},
+    ast_parser::{AstNode, AstNodeKind, FOR_ITERABLE_TEMP_VAR, fatal_generic},
     builtins::{ProgramFn, all_builtins, builtin_get, builtin_push},
     tokenizer::{Operator, Token, Value},
 };
@@ -30,11 +30,8 @@ enum Inst {
         collection: Addr,
         value: Addr,
     },
-    Push {
-        src: Addr,
-    },
-    Pop {
-        dst: Addr,
+    SetStackPointer {
+        value: u32,
     },
     BinaryOp {
         op: Operator,
@@ -78,35 +75,36 @@ impl Inst {
 const RESULT_REG1: Addr = Addr::Abs(0);
 const RESULT_REG2: Addr = Addr::Abs(1);
 const ZERO_REG: Addr = Addr::Abs(2);
-const TRASH_REG: Addr = Addr::Abs(3);
 const EMPTY_LIST_REG: Addr = Addr::Abs(4);
 const ARG_REG_START: u32 = 10;
 const ARG_REG_COUNT: u32 = 10;
-const RESERVED_REGS: u32 = 20;
+const RESERVED_REGS: u32 = 30;
 const STACK_SIZE: u32 = 2 << 11;
 
 pub struct Compilation<'a> {
     instructions: Vec<Inst>,
-    variables: HashMap<Rc<str>, Addr>,
     literals: Vec<(Value, Addr)>,
-    functions: HashMap<Rc<str>, (ProgramFn, usize)>,
+    functions: HashMap<String, (ProgramFn, usize)>,
     tokens: &'a [Token],
     ip_to_token: Vec<usize>,
+    scope_vars: Vec<&'a [String]>,
+    cur_stack_ptr_offset: u32,
 }
 
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
         let mut functions = HashMap::new();
         for (i, (name, func)) in all_builtins().iter().enumerate() {
-            functions.insert(Rc::from(*name), (*func, i));
+            functions.insert(name.to_string(), (*func, i));
         }
         Compilation {
             instructions: Vec::new(),
-            variables: HashMap::new(),
             literals: Vec::new(),
             functions,
             tokens,
             ip_to_token: Vec::new(),
+            scope_vars: Vec::new(),
+            cur_stack_ptr_offset: 0,
         }
     }
 
@@ -119,35 +117,70 @@ impl<'a> Compilation<'a> {
         self.instructions.len()
     }
 
-    fn variable_addr(&mut self, name: &Rc<str>) -> Addr {
-        if let Some(&addr) = self.variables.get(name) {
-            addr
-        } else {
-            let addr = Addr::Abs(self.variables.len() as u32 + RESERVED_REGS);
-            self.variables.insert(Rc::clone(name), addr);
-            addr
+    fn variable_offset(
+        &mut self,
+        name: &str,
+        node: &AstNode,
+        initialized_vars: &mut u32,
+        can_init: bool,
+    ) -> Addr {
+        // dbg!(name, &self.scope_vars);
+        let mut frame_ptr = self.cur_stack_ptr_offset;
+        let mut current_scope = true;
+        let mut tried_to_use = false;
+        for vars in self.scope_vars.iter().rev() {
+            frame_ptr -= vars.len() as u32;
+            if let Some(pos) = vars.iter().position(|v| v == name) {
+                // Initialize this variable if we are allowed and it is the next one to initialize
+                // in this scope.
+                if current_scope {
+                    if can_init && pos as u32 == *initialized_vars {
+                        *initialized_vars = pos as u32 + 1;
+                    }
+                    // If the variable is not the next to initialize, we are trying to access it too
+                    // soon, but it could still exist in an outer scope.
+                    else if pos as u32 >= *initialized_vars {
+                        tried_to_use = true;
+                        current_scope = false;
+                        continue;
+                    }
+                }
+                let offset = self.cur_stack_ptr_offset - frame_ptr - pos as u32 - 1;
+                return Addr::Stack(offset);
+            }
+            current_scope = false;
         }
+
+        if tried_to_use {
+            self.fatal(
+                &format!("Variable '{}' used before initialization", name),
+                node,
+            );
+        }
+        self.fatal(&format!("Undefined variable: {}", name), node);
     }
 
     fn make_literal(&mut self, value: &Value) -> Addr {
-        let lit_name = Rc::from(format!("__lit_{}", self.literals.len()));
-        let addr = self.variable_addr(&lit_name);
+        let addr = Addr::Abs(self.literals.len() as u32 + RESERVED_REGS);
         self.literals.push((value.clone(), addr));
         addr
     }
 
     fn push_instruction(&mut self, inst: Inst, node: &AstNode) {
+        if let Inst::SetStackPointer { value } = &inst {
+            self.cur_stack_ptr_offset = *value
+        }
         self.instructions.push(inst);
         self.ip_to_token.push(node.token_idx);
     }
 
-    fn compile_function_args(&mut self, args: &[AstNode]) {
+    fn compile_function_args(&mut self, args: &[AstNode], initialized_vars: &mut u32) {
         if args.len() > ARG_REG_COUNT as usize {
             self.fatal("Too many arguments in function call", &args[0]);
         }
         for (i, arg) in args.iter().enumerate() {
             let arg_reg = Addr::Abs(ARG_REG_START + i as u32);
-            let (res_reg, _) = self.compile_expression(arg, arg_reg);
+            let (res_reg, _) = self.compile_expression(arg, arg_reg, initialized_vars);
             if res_reg != arg_reg {
                 self.push_instruction(
                     Inst::Load {
@@ -182,7 +215,7 @@ impl<'a> Compilation<'a> {
 
     fn compile_function_call(
         &mut self,
-        name: &Rc<str>,
+        name: &str,
         arg_count: usize,
         dst: Addr,
         node: &AstNode,
@@ -208,13 +241,17 @@ impl<'a> Compilation<'a> {
         &mut self,
         expr: &AstNode,
         dst_suggestion: Addr,
+        initialized_vars: &mut u32,
     ) -> (Addr, Option<Value>) {
         match &expr.kind {
             AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
-            AstNodeKind::Variable(name) => (self.variable_addr(name), None),
+            AstNodeKind::Variable(name) => (
+                self.variable_offset(name, expr, initialized_vars, false),
+                None,
+            ),
             AstNodeKind::BinaryOp(left, op, right) => {
-                let (lreg, lval) = self.compile_expression(left, RESULT_REG1);
-                let (rreg, rval) = self.compile_expression(right, RESULT_REG2);
+                let (lreg, lval) = self.compile_expression(left, RESULT_REG1, initialized_vars);
+                let (rreg, rval) = self.compile_expression(right, RESULT_REG2, initialized_vars);
 
                 // Constant folding for literals
                 if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
@@ -235,7 +272,7 @@ impl<'a> Compilation<'a> {
                 (dst_suggestion, None)
             }
             AstNodeKind::FunctionCall(name, args) => {
-                self.compile_function_args(args);
+                self.compile_function_args(args, initialized_vars);
                 let dst = self.compile_function_call(name, args.len(), dst_suggestion, expr);
                 (dst, None)
             }
@@ -248,7 +285,8 @@ impl<'a> Compilation<'a> {
                     expr,
                 );
                 for node in nodes.iter() {
-                    let (value_reg, _) = self.compile_expression(node, RESULT_REG1);
+                    let (value_reg, _) =
+                        self.compile_expression(node, RESULT_REG1, initialized_vars);
                     self.push_instruction(
                         Inst::PushToCollection {
                             collection: dst_suggestion,
@@ -263,15 +301,51 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_block(&mut self, block: &AstNode) {
-        let AstNodeKind::Block(block) = &block.kind else {
+    fn block_start(&mut self, node: &'a AstNode) -> u32 {
+        let AstNodeKind::Block(_, vars) = &node.kind else {
+            self.fatal("Expected block node", node);
+        };
+        let frame_ptr = self.cur_stack_ptr_offset;
+        let variables_end_sp = self.cur_stack_ptr_offset + vars.len() as u32;
+        self.push_instruction(
+            Inst::SetStackPointer {
+                value: variables_end_sp,
+            },
+            node,
+        );
+        self.scope_vars.push(vars);
+        frame_ptr
+    }
+
+    fn block_end(&mut self, frame_ptr: u32, node: &'a AstNode) {
+        self.push_instruction(Inst::SetStackPointer { value: frame_ptr }, node);
+        self.scope_vars.pop();
+
+        if self.scope_vars.is_empty() {
+            for inst in &mut self.instructions {
+                if let Inst::SetStackPointer { value } = inst {
+                    *value += RESERVED_REGS - 1 + self.literals.len() as u32;
+                }
+            }
+        }
+    }
+
+    fn compile_block_full(&mut self, block: &'a AstNode) {
+        let frame_ptr = self.block_start(block);
+        let mut initialized_vars = 0;
+        self.compile_block(block, &mut initialized_vars);
+        self.block_end(frame_ptr, block);
+    }
+
+    fn compile_block(&mut self, block: &'a AstNode, initialized_vars: &mut u32) {
+        let AstNodeKind::Block(b, _) = &block.kind else {
             self.fatal("Expected block node", block);
         };
-        for node in block.iter() {
+        for node in b.iter() {
             match &node.kind {
                 AstNodeKind::Assign(var, expr) => {
-                    let var_reg = self.variable_addr(var);
-                    let (expr_reg, _) = self.compile_expression(expr, var_reg);
+                    let var_reg = self.variable_offset(var, node, initialized_vars, true);
+                    let (expr_reg, _) = self.compile_expression(expr, var_reg, initialized_vars);
                     if expr_reg != var_reg {
                         self.push_instruction(
                             Inst::Load {
@@ -283,16 +357,41 @@ impl<'a> Compilation<'a> {
                     }
                 }
                 AstNodeKind::FunctionCall(name, args) => {
-                    self.compile_function_args(args);
+                    self.compile_function_args(args, initialized_vars);
                     self.compile_function_call(name, args.len(), RESULT_REG1, node);
                 }
                 AstNodeKind::ForLoop(index_var, item_var, collection, body) => {
-                    let (iterable_addr, _) = self.compile_expression(collection, RESULT_REG1);
+                    let frame_ptr = self.block_start(body);
+                    let mut initialized_vars = 0;
 
-                    self.push_instruction(Inst::Push { src: iterable_addr }, node);
-                    self.push_instruction(Inst::Push { src: ZERO_REG }, node);
-                    let iterable_addr = Addr::Stack(1);
-                    let index_addr = Addr::Stack(0);
+                    let iterable_addr = self.variable_offset(
+                        FOR_ITERABLE_TEMP_VAR,
+                        node,
+                        &mut initialized_vars,
+                        true,
+                    );
+
+                    let (addr, _) =
+                        self.compile_expression(collection, iterable_addr, &mut initialized_vars);
+                    if addr != iterable_addr {
+                        self.push_instruction(
+                            Inst::Load {
+                                dst: iterable_addr,
+                                src: addr,
+                            },
+                            collection,
+                        );
+                    };
+
+                    let index_addr =
+                        self.variable_offset(index_var, node, &mut initialized_vars, true);
+                    self.push_instruction(
+                        Inst::Load {
+                            dst: index_addr,
+                            src: ZERO_REG,
+                        },
+                        node,
+                    );
 
                     let for_cmp_ip = self.cur_inst_ptr();
                     self.push_instruction(
@@ -304,30 +403,24 @@ impl<'a> Compilation<'a> {
                         node,
                     );
 
-                    if index_var.as_ref() != "_" {
-                        let index_reg = self.variable_addr(index_var);
-                        self.push_instruction(
-                            Inst::Load {
-                                dst: index_reg,
-                                src: index_addr,
-                            },
-                            node,
-                        );
-                    }
-
-                    if item_var.as_ref().is_some_and(|v| v.as_ref() != "_") {
-                        let item_reg = self.variable_addr(item_var.as_ref().unwrap());
+                    if let Some(item_var) = item_var
+                        && item_var != "_"
+                    {
+                        let item_addr =
+                            self.variable_offset(item_var, node, &mut initialized_vars, true);
                         self.push_instruction(
                             Inst::LoadFromCollection {
-                                dst: item_reg,
+                                dst: item_addr,
                                 collection: iterable_addr,
                                 index: index_addr,
                             },
                             node,
                         );
+                    } else {
+                        initialized_vars += 1;
                     }
 
-                    self.compile_block(body);
+                    self.compile_block(body, &mut initialized_vars);
 
                     self.push_instruction(Inst::Incr { dst: index_addr }, node);
                     self.push_instruction(Inst::Jump { target: for_cmp_ip }, node);
@@ -335,19 +428,19 @@ impl<'a> Compilation<'a> {
                     let loop_end_ip = self.cur_inst_ptr();
                     self.instructions[for_cmp_ip].set_jump_target(loop_end_ip);
 
-                    self.push_instruction(Inst::Pop { dst: TRASH_REG }, node);
-                    self.push_instruction(Inst::Pop { dst: TRASH_REG }, node);
+                    self.block_end(frame_ptr, body);
                 }
                 AstNodeKind::IfStatement(condition, block, else_block) => {
-                    let (cond_reg, cond_val) = self.compile_expression(condition, RESULT_REG1);
+                    let (cond_reg, cond_val) =
+                        self.compile_expression(condition, RESULT_REG1, initialized_vars);
 
                     let const_cond_true = cond_val.map(|v| !is_zero(|s| self.fatal(s, node), &v));
 
                     if let Some(const_cond_true) = const_cond_true {
                         if const_cond_true {
-                            self.compile_block(block);
+                            self.compile_block_full(block);
                         } else if let Some(else_block) = else_block {
-                            self.compile_block(else_block);
+                            self.compile_block_full(else_block);
                         }
                         continue;
                     }
@@ -361,7 +454,7 @@ impl<'a> Compilation<'a> {
                         node,
                     );
 
-                    self.compile_block(block);
+                    self.compile_block_full(block);
 
                     if let Some(else_block) = else_block {
                         let else_jump_ip = self.cur_inst_ptr();
@@ -375,7 +468,7 @@ impl<'a> Compilation<'a> {
                         let else_start_ip = self.cur_inst_ptr();
                         self.instructions[if_jump_ip].set_jump_target(else_start_ip);
 
-                        self.compile_block(else_block);
+                        self.compile_block_full(else_block);
 
                         let after_else_ip = self.cur_inst_ptr();
                         self.instructions[else_jump_ip].set_jump_target(after_else_ip);
@@ -393,11 +486,14 @@ impl<'a> Compilation<'a> {
 }
 
 #[allow(dead_code)]
-pub fn compile<'a>(block: &AstNode, tokens: &'a [Token]) -> Compilation<'a> {
+pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
-    c.compile_block(block);
-    for ins in c.instructions.iter() {
-        trace!("{:?}", ins);
+    let mut initialized_vars = 0;
+    let frame_ptr = c.block_start(block);
+    c.compile_block(block, &mut initialized_vars);
+    c.block_end(frame_ptr, block);
+    for (i, ins) in c.instructions.iter().enumerate() {
+        trace!("{:4}: {:?}", i, ins);
     }
     c
 }
@@ -407,8 +503,8 @@ pub struct Vm<'a> {
     instructions: Vec<Inst>,
     ip_to_token: Vec<usize>,
     tokens: &'a [Token],
-    ip: usize,
-    sp: usize,
+    inst_ptr: usize,
+    stack_ptr: usize,
     sp_start: usize,
     memory: Vec<Value>,
     functions: Vec<ProgramFn>,
@@ -423,7 +519,7 @@ impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
         let mut memory = vec![
             Value::Integer(0);
-            RESERVED_REGS as usize + ctx.variables.len() + STACK_SIZE as usize
+            RESERVED_REGS as usize + ctx.literals.len() + STACK_SIZE as usize
         ];
         let Addr::Abs(empty_list_reg) = EMPTY_LIST_REG else {
             unreachable!();
@@ -441,27 +537,27 @@ impl<'a> Vm<'a> {
             functions[*index] = *func;
         }
 
-        let sp = RESERVED_REGS as usize + ctx.variables.len();
+        let sp = RESERVED_REGS as usize + ctx.literals.len();
 
         Vm {
             instructions: ctx.instructions,
             ip_to_token: ctx.ip_to_token,
             tokens: ctx.tokens,
-            ip: 0,
+            inst_ptr: 0,
             memory,
             functions,
-            sp,
+            stack_ptr: sp,
             sp_start: sp,
         }
     }
 
     fn fatal(&self, msg: &str) -> ! {
-        let token = &self.tokens[self.ip_to_token[self.ip]];
+        let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
         fatal_generic(
             msg,
             &format!(
                 "Fatal error during VM execution at inst {:?}",
-                self.instructions[self.ip]
+                self.instructions[self.inst_ptr]
             ),
             token,
         )
@@ -471,8 +567,13 @@ impl<'a> Vm<'a> {
         match addr {
             Addr::Abs(reg) => reg as usize,
             Addr::Stack(offset) => {
-                debug_assert!(self.sp - offset as usize >= self.sp_start);
-                self.sp - offset as usize
+                // trace!(
+                //     "Stack offset {}, pos: {}",
+                //     offset,
+                //     self.stack_ptr - offset as usize
+                // );
+                debug_assert!(self.stack_ptr - offset as usize >= self.sp_start);
+                self.stack_ptr - offset as usize
             }
         }
     }
@@ -492,15 +593,20 @@ impl<'a> Vm<'a> {
     }
 
     pub fn run(&mut self) {
-        while self.ip < self.instructions.len() {
-            // trace!("IP {}: {:?}", self.ip, self.instructions[self.ip]);
-            // trace!(
-            //     "SP {}\n {:?}",
-            //     self.sp,
-            //     self.memory[RESERVED_REGS..self.sp + 1].to_vec()
-            // );
-            match self.instructions[self.ip] {
+        while self.inst_ptr < self.instructions.len() {
+            trace!(
+                "IP {}: {:?}",
+                self.inst_ptr, self.instructions[self.inst_ptr]
+            );
+
+            match self.instructions[self.inst_ptr] {
                 Inst::Load { dst, src } => {
+                    trace!(
+                        "Load value {} from {:?} to {:?}",
+                        self.mem_get(src).dbg_display(),
+                        src,
+                        dst
+                    );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
                 Inst::LoadFromCollection {
@@ -523,19 +629,12 @@ impl<'a> Vm<'a> {
                     builtin_push(&[collection.clone(), value.clone()])
                         .expect("builtin_push failed");
                 }
-                Inst::Push { src } => {
-                    self.sp += 1;
-                    let val = self.mem_get(src).clone();
-                    self.mem_set(Addr::Stack(0), val);
-                    if self.sp >= self.memory.len() {
+                Inst::SetStackPointer { value } => {
+                    self.stack_ptr = value as usize;
+                    if self.stack_ptr >= self.memory.len() {
                         self.fatal("Stack overflow");
                     }
-                }
-                Inst::Pop { dst } => {
-                    let val = self.mem_get(Addr::Stack(0)).clone();
-                    self.mem_set(dst, val);
-                    self.sp -= 1;
-                    debug_assert!(self.sp >= self.sp_start);
+                    debug_assert!(self.stack_ptr >= self.sp_start);
                 }
                 Inst::BinaryOp {
                     op,
@@ -567,6 +666,12 @@ impl<'a> Vm<'a> {
                     }
                 },
                 Inst::JumpIfNotInRange { target, range, src } => {
+                    trace!(
+                        "JumpIfNotInRange to {} if {:?} not in {:?}",
+                        target,
+                        self.mem_get(src).dbg_display(),
+                        self.mem_get(range).dbg_display()
+                    );
                     let iterable_value = self.mem_get(range);
                     let index = self.mem_get(src);
 
@@ -590,24 +695,29 @@ impl<'a> Vm<'a> {
                         )),
                     };
                     if !in_range {
-                        self.ip = target;
+                        self.inst_ptr = target;
                         continue;
                     }
                 }
                 Inst::Jump { target } => {
-                    self.ip = target;
+                    self.inst_ptr = target;
                     continue;
                 }
                 Inst::JumpIfZero { target, cond } => {
                     let cond_value = &self.mem_get(cond);
                     let is_zero = is_zero(|s| self.fatal(s), cond_value);
                     if is_zero {
-                        self.ip = target;
+                        self.inst_ptr = target;
                         continue;
                     }
                 }
             }
-            self.ip += 1;
+            trace!(
+                "SP {}\n {:?}",
+                self.stack_ptr,
+                self.memory[self.sp_start..self.stack_ptr + 1].to_vec()
+            );
+            self.inst_ptr += 1;
         }
     }
 
