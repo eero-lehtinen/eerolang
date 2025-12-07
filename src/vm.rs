@@ -41,7 +41,7 @@ impl<'a> Vm<'a> {
         }
 
         let mut functions = vec![placeholder_func as ProgramFn; ctx.functions.len()];
-        for (_, (func, index)) in ctx.functions.iter() {
+        for (_, (func, index, _)) in ctx.functions.iter() {
             functions[*index] = *func;
         }
 

@@ -84,6 +84,7 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     fn_ok!()
 }
 
+const READFILE_ARGS: u32 = 1;
 pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     let [Value::String(filename)] = &args else {
         arg_bail!("string", args);
@@ -95,6 +96,7 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     Ok(Value::String(content.trim().to_owned().into()))
 }
 
+const SPLIT_ARGS: u32 = 2;
 pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
     let [Value::String(s), Value::String(delim)] = &args else {
         arg_bail!("string, string", args);
@@ -108,6 +110,7 @@ pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
     Ok(Value::List(Rc::new(RefCell::new(parts))))
 }
 
+const INT_ARGS: u32 = 1;
 pub fn builtin_int(args: &[Value]) -> ProgramFnRes {
     let [arg] = args else {
         arg_bail!("string/float/int", args);
@@ -126,6 +129,7 @@ pub fn builtin_int(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const FLOAT_ARGS: u32 = 1;
 pub fn builtin_float(args: &[Value]) -> ProgramFnRes {
     let [arg] = args else {
         arg_bail!("string/int", args);
@@ -174,6 +178,7 @@ fn write_str(w: &mut impl Write, value: &Value) {
     }
 }
 
+const STRING_ARGS: u32 = 1;
 pub fn builtin_string(args: &[Value]) -> ProgramFnRes {
     let [arg] = args else {
         arg_bail!("value", args);
@@ -250,6 +255,7 @@ pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
     }))))
 }
 
+const PUSH_ARGS: u32 = 2;
 #[inline]
 pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
     let [target, value] = args else {
@@ -265,6 +271,7 @@ pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const SET_ARGS: u32 = 3;
 pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
     let [target, index_or_key, value] = args else {
         arg_bail!("list/map, int/string if map, value", args);
@@ -295,6 +302,7 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const GET_ARGS: u32 = 2;
 #[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     let [target, index_or_key] = args else {
@@ -338,6 +346,7 @@ pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const HAS_ARGS: u32 = 2;
 pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
     let [target, key] = args else {
         arg_bail!("map, string", args);
@@ -355,6 +364,7 @@ pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const LEN_ARGS: u32 = 1;
 pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     let [len] = args else {
         arg_bail!("list/string/map", args);
@@ -370,6 +380,7 @@ pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     Ok(Value::Integer(len))
 }
 
+const MOD_ARGS: u32 = 2;
 pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
     let [a, b] = args else {
         arg_bail!("int, int", args);
@@ -414,23 +425,55 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
 pub type ProgramFnRes = Result<Value, String>;
 pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 
-pub fn all_builtins() -> Vec<(&'static str, ProgramFn)> {
+#[derive(Clone, Copy, Debug)]
+pub enum ArgsRequred {
+    Exact(u32),
+    Range(u32, u32),
+    Any,
+}
+
+impl ArgsRequred {
+    pub fn matches(&self, arg_count: usize) -> bool {
+        match self {
+            ArgsRequred::Exact(n) => arg_count as u32 == *n,
+            ArgsRequred::Range(min, max) => {
+                let arg_count = arg_count as u32;
+                arg_count >= *min && arg_count <= *max
+            }
+            ArgsRequred::Any => true,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            ArgsRequred::Exact(n) => format!("{}", n),
+            ArgsRequred::Range(min, max) => format!("{} to {}", min, max),
+            ArgsRequred::Any => "any number of".to_string(),
+        }
+    }
+}
+
+pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
     vec![
-        ("print", builtin_print),
-        ("readfile", builtin_readfile),
-        ("split", builtin_split),
-        ("int", builtin_int),
-        ("float", builtin_float),
-        ("string", builtin_string),
-        ("substr", builtin_substr),
-        ("list", builtin_list),
-        ("map", builtin_map),
-        ("push", builtin_push),
-        ("set", builtin_set),
-        ("get", builtin_get),
-        ("has", builtin_has),
-        ("len", builtin_len),
-        ("mod", builtin_mod),
-        ("range", builtin_range),
+        ("print", builtin_print, ArgsRequred::Any),
+        (
+            "readfile",
+            builtin_readfile,
+            ArgsRequred::Exact(READFILE_ARGS),
+        ),
+        ("split", builtin_split, ArgsRequred::Exact(SPLIT_ARGS)),
+        ("int", builtin_int, ArgsRequred::Exact(INT_ARGS)),
+        ("float", builtin_float, ArgsRequred::Exact(FLOAT_ARGS)),
+        ("string", builtin_string, ArgsRequred::Exact(STRING_ARGS)),
+        ("substr", builtin_substr, ArgsRequred::Range(2, 3)),
+        ("list", builtin_list, ArgsRequred::Any),
+        ("map", builtin_map, ArgsRequred::Any),
+        ("push", builtin_push, ArgsRequred::Exact(PUSH_ARGS)),
+        ("set", builtin_set, ArgsRequred::Exact(SET_ARGS)),
+        ("get", builtin_get, ArgsRequred::Exact(GET_ARGS)),
+        ("has", builtin_has, ArgsRequred::Exact(HAS_ARGS)),
+        ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
+        ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
+        ("range", builtin_range, ArgsRequred::Range(1, 2)),
     ]
 }

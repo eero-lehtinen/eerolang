@@ -403,11 +403,9 @@ fn fatal(msg: &str, token: &Token) -> ! {
 
 pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
     let char_col = find_source_char_col(token.line, token.byte_col);
-    let source = SOURCE.get().unwrap();
     eprintln!(
-        "Error: {}: at '{}', line {}, column {}",
+        "Error: {}: at line {}, column {}",
         msg,
-        &source[token.byte_pos_start..token.byte_pos_end],
         token.line + 1,
         char_col + 1
     );

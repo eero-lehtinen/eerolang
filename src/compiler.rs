@@ -5,7 +5,7 @@ use log::trace;
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
-    builtins::{ProgramFn, all_builtins},
+    builtins::{ArgsRequred, ProgramFn, all_builtins},
     tokenizer::{Operator, Token, Value},
 };
 
@@ -108,7 +108,7 @@ pub const STACK_SIZE: u32 = 2 << 12;
 pub struct Compilation<'a> {
     pub instructions: Vec<Inst>,
     pub literals: Vec<(Value, Addr)>,
-    pub functions: HashMap<String, (ProgramFn, usize)>,
+    pub functions: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
     pub scope_vars: Vec<Vec<&'a str>>,
@@ -118,8 +118,8 @@ pub struct Compilation<'a> {
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
         let mut functions = HashMap::new();
-        for (i, (name, func)) in all_builtins().iter().enumerate() {
-            functions.insert(name.to_string(), (*func, i));
+        for (i, (name, func, args)) in all_builtins().iter().enumerate() {
+            functions.insert(name.to_string(), (*func, i, *args));
         }
         Compilation {
             instructions: Vec::new(),
@@ -259,10 +259,22 @@ impl<'a> Compilation<'a> {
         dst: Addr,
         node: &AstNode,
     ) -> Addr {
-        let (_, func_index) = self
+        let (_, func_index, args_req) = self
             .functions
             .get(name)
             .unwrap_or_else(|| self.fatal(&format!("Undefined function: {}", name), node));
+
+        if !args_req.matches(arg_count) {
+            self.fatal(
+                &format!(
+                    "Function '{}' expects {} arguments, got {}",
+                    name,
+                    args_req.describe(),
+                    arg_count,
+                ),
+                node,
+            );
+        }
 
         self.push_instruction(
             Inst::Call {
