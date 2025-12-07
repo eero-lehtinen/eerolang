@@ -17,6 +17,13 @@ pub enum Addr {
 }
 
 #[derive(Debug, Clone)]
+pub struct BinaryOpData {
+    pub dst: Addr,
+    pub src1: Addr,
+    pub src2: Addr,
+}
+
+#[derive(Debug, Clone)]
 pub enum Inst {
     Load {
         dst: Addr,
@@ -37,12 +44,16 @@ pub enum Inst {
     SubStackPointer {
         value: u32,
     },
-    BinaryOp {
-        op: Operator,
-        dst: Addr,
-        src1: Addr,
-        src2: Addr,
-    },
+    Add(BinaryOpData),
+    Sub(BinaryOpData),
+    Mul(BinaryOpData),
+    Div(BinaryOpData),
+    Lt(BinaryOpData),
+    Gt(BinaryOpData),
+    Lte(BinaryOpData),
+    Gte(BinaryOpData),
+    Eq(BinaryOpData),
+    Neq(BinaryOpData),
     Incr {
         dst: Addr,
     },
@@ -267,19 +278,29 @@ impl<'a> Compilation<'a> {
                 // Constant folding for literals
                 if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
                     let folded_value =
-                        binary_op(|s| self.fatal(s, expr), &lit_left, *op, &lit_right);
+                        binary_op(|err| self.fatal(err, expr), &lit_left, *op, &lit_right);
                     return (self.make_literal(&folded_value), Some(folded_value));
                 }
 
-                self.push_instruction(
-                    Inst::BinaryOp {
-                        op: *op,
-                        dst: dst_suggestion,
-                        src1: lreg,
-                        src2: rreg,
-                    },
-                    expr,
-                );
+                let binop_data = BinaryOpData {
+                    dst: dst_suggestion,
+                    src1: lreg,
+                    src2: rreg,
+                };
+                let inst = match op {
+                    Operator::Add => Inst::Add(binop_data),
+                    Operator::Sub => Inst::Sub(binop_data),
+                    Operator::Mul => Inst::Mul(binop_data),
+                    Operator::Div => Inst::Div(binop_data),
+                    Operator::Lt => Inst::Lt(binop_data),
+                    Operator::Gt => Inst::Gt(binop_data),
+                    Operator::Lte => Inst::Lte(binop_data),
+                    Operator::Gte => Inst::Gte(binop_data),
+                    Operator::Eq => Inst::Eq(binop_data),
+                    Operator::Neq => Inst::Neq(binop_data),
+                };
+
+                self.push_instruction(inst, expr);
                 (dst_suggestion, None)
             }
             AstNodeKind::FunctionCall(name, args) => {
@@ -512,75 +533,75 @@ pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     c
 }
 
+pub fn binary_op_err(left_val: &Value, op: &str, right_val: &Value) -> String {
+    format!(
+        "Cannot apply operator '{}' to operands {} and {})",
+        op,
+        left_val.dbg_display(),
+        right_val.dbg_display()
+    )
+}
+
 #[inline]
-pub fn binary_op(
-    err_fn: impl FnOnce(&str),
-    left_val: &Value,
-    op: Operator,
-    right_val: &Value,
-) -> Value {
-    let unsupported = || {
-        err_fn(&format!(
-            "Cannot apply operator '{}' to operands {} and {})",
-            op.dbg_display(),
-            left_val.dbg_display(),
-            right_val.dbg_display()
-        ));
-        unreachable!()
+fn promoted(l: &Value, r: &Value) -> Option<(f64, f64)> {
+    l.float_promoted().zip(r.float_promoted())
+}
+
+macro_rules! impl_op {
+    ($func_name:ident, $op:tt) => {
+        #[inline]
+        pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
+            match (l, r) {
+                (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
+                (Value::Float(l), Value::Float(r)) => (l $op r).into(),
+                _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
+                    err_fn(&binary_op_err(l, stringify!($op), r));
+                    unreachable!()
+                }),
+            }
+        }
     };
-
-    if let (Value::String(l), Value::String(r)) = (&left_val, &right_val) {
-        return match op {
-            Operator::Sum => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
-            Operator::Eq => Value::Integer((l == r) as i64),
-            Operator::Neq => Value::Integer((l != r) as i64),
-            _ => unsupported(),
-        };
-    }
-
-    if let (Value::Integer(l), Value::Integer(r)) = (&left_val, &right_val) {
-        return Value::Integer(match op {
-            Operator::Sum => l + r,
-            Operator::Sub => l - r,
-            Operator::Multiply => l * r,
-            Operator::Divide => l / r,
-            Operator::Lt => (l < r) as i64,
-            Operator::Gt => (l > r) as i64,
-            Operator::Lte => (l <= r) as i64,
-            Operator::Gte => (l >= r) as i64,
-            Operator::Eq => (l == r) as i64,
-            Operator::Neq => (l != r) as i64,
-        });
-    }
-
-    // Promote to float if both weren't integers
-    let right_prom = if let Value::Integer(i) = &right_val {
-        Value::Float(*i as f64)
-    } else {
-        right_val.clone()
+    ($func_name:ident, $op:tt, $str_fn:expr) => {
+        #[inline]
+        pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
+            match (l, r) {
+                (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
+                (Value::Float(l), Value::Float(r)) => (l $op r).into(),
+                (Value::String(l), Value::String(r)) => $str_fn(l, r).into(),
+                _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
+                    err_fn(&binary_op_err(l, stringify!($op), r));
+                    unreachable!()
+                }),
+            }
+        }
     };
-    let left_prom = if let Value::Integer(i) = &left_val {
-        Value::Float(*i as f64)
-    } else {
-        left_val.clone()
-    };
+}
 
-    if let (Value::Float(l), Value::Float(r)) = (&left_prom, &right_prom) {
-        return match op {
-            Operator::Sum => Value::Float(l + r),
-            Operator::Sub => Value::Float(l - r),
-            Operator::Multiply => Value::Float(l * r),
-            Operator::Divide => Value::Float(l / r),
-            Operator::Lt => Value::Integer((l < r) as i64),
-            Operator::Gt => Value::Integer((l > r) as i64),
-            Operator::Lte => Value::Integer((l <= r) as i64),
-            Operator::Gte => Value::Integer((l >= r) as i64),
-            Operator::Eq => Value::Integer((l == r) as i64),
-            Operator::Neq => Value::Integer((l != r) as i64),
-        };
+impl_op!(add_op, +, |l: &Rc<String>, r: &Rc<String>| l.as_ref().to_owned() + r.as_ref());
+impl_op!(sub_op, -);
+impl_op!(mul_op, *);
+impl_op!(div_op, /);
+impl_op!(lt_op, <);
+impl_op!(gt_op, >);
+impl_op!(lte_op, <=);
+impl_op!(gte_op, >=);
+impl_op!(eq_op, ==, |l, r| l == r);
+impl_op!(neq_op, !=, |l, r| l != r);
+
+#[inline]
+pub fn binary_op(err_fn: impl FnOnce(&str), l: &Value, op: Operator, r: &Value) -> Value {
+    match op {
+        Operator::Add => add_op(err_fn, l, r),
+        Operator::Sub => sub_op(err_fn, l, r),
+        Operator::Mul => mul_op(err_fn, l, r),
+        Operator::Div => div_op(err_fn, l, r),
+        Operator::Lt => lt_op(err_fn, l, r),
+        Operator::Gt => gt_op(err_fn, l, r),
+        Operator::Lte => lte_op(err_fn, l, r),
+        Operator::Gte => gte_op(err_fn, l, r),
+        Operator::Eq => eq_op(err_fn, l, r),
+        Operator::Neq => neq_op(err_fn, l, r),
     }
-
-    unsupported()
 }
 
 #[inline]

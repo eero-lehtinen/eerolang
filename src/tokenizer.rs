@@ -57,10 +57,10 @@ pub struct Token {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operator {
-    Sum,
+    Add,
     Sub,
-    Multiply,
-    Divide,
+    Mul,
+    Div,
     Lt,
     Gt,
     Lte,
@@ -78,17 +78,17 @@ impl Operator {
             | Operator::Gte
             | Operator::Eq
             | Operator::Neq => 0,
-            Operator::Sum | Operator::Sub => 1,
-            Operator::Multiply | Operator::Divide => 2,
+            Operator::Add | Operator::Sub => 1,
+            Operator::Mul | Operator::Div => 2,
         }
     }
 
     pub fn dbg_display(&self) -> &'static str {
         match self {
-            Operator::Sum => "+",
+            Operator::Add => "+",
             Operator::Sub => "-",
-            Operator::Multiply => "*",
-            Operator::Divide => "/",
+            Operator::Mul => "*",
+            Operator::Div => "/",
             Operator::Lt => "<",
             Operator::Gt => ">",
             Operator::Lte => "<=",
@@ -106,24 +106,6 @@ pub enum Value {
     String(Rc<String>),
     List(Rc<RefCell<Vec<Value>>>),
     Range(Box<Range>),
-}
-
-pub fn dbg_display(values: &[Value]) -> String {
-    if values.is_empty() {
-        "[]".to_string()
-    } else {
-        let items = values
-            .iter()
-            .take(6)
-            .map(|item| item.dbg_display())
-            .collect::<Vec<String>>()
-            .join(", ");
-        if values.len() > 6 {
-            format!("[{}, ...]", items)
-        } else {
-            format!("[{}]", items)
-        }
-    }
 }
 
 impl Value {
@@ -144,6 +126,69 @@ impl Value {
                 format!("(list {})", dbg_display(&v.borrow()))
             }
             Value::Range(r) => format!("(range {}, {})", r.start, r.end),
+        }
+    }
+
+    #[inline]
+    pub fn float_promoted(&self) -> Option<f64> {
+        Some(match self {
+            Value::Integer(i) => *i as f64,
+            Value::Float(f) => *f,
+            _ => return None,
+        })
+    }
+}
+
+impl From<i64> for Value {
+    fn from(value: i64) -> Self {
+        Value::Integer(value)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Integer(i64::from(value))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Float(value)
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::String(Rc::new(value))
+    }
+}
+
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::String(Rc::new(value.to_string()))
+    }
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(value: Vec<Value>) -> Self {
+        Value::List(Rc::new(RefCell::new(value)))
+    }
+}
+
+pub fn dbg_display(values: &[Value]) -> String {
+    if values.is_empty() {
+        "[]".to_string()
+    } else {
+        let items = values
+            .iter()
+            .take(6)
+            .map(|item| item.dbg_display())
+            .collect::<Vec<String>>()
+            .join(", ");
+        if values.len() > 6 {
+            format!("[{}, ...]", items)
+        } else {
+            format!("[{}]", items)
         }
     }
 }
@@ -225,10 +270,10 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
         }
 
         match ch {
-            '+' => tok!(1, TokenKind::Operator(Operator::Sum)),
+            '+' => tok!(1, TokenKind::Operator(Operator::Add)),
             '-' => tok!(1, TokenKind::Operator(Operator::Sub)),
-            '*' => tok!(1, TokenKind::Operator(Operator::Multiply)),
-            '/' => tok!(1, TokenKind::Operator(Operator::Divide)),
+            '*' => tok!(1, TokenKind::Operator(Operator::Mul)),
+            '/' => tok!(1, TokenKind::Operator(Operator::Div)),
             '<' => {
                 if iter.peek().is_some_and(|(_, c)| *c == '=') {
                     iter.next();

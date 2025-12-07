@@ -4,8 +4,8 @@ use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get, builtin_push},
     compiler::{
-        ARG_REG_START, Addr, Compilation, EMPTY_LIST_REG, Inst, RESERVED_REGS, STACK_SIZE,
-        binary_op, is_zero,
+        ARG_REG_START, Addr, Compilation, EMPTY_LIST_REG, Inst, RESERVED_REGS, STACK_SIZE, add_op,
+        div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op, neq_op, sub_op,
     },
     tokenizer::{Token, Value},
 };
@@ -111,14 +111,23 @@ impl<'a> Vm<'a> {
     }
 
     pub fn run(&mut self) {
+        macro_rules! bop {
+            ($fn:ident, $data:expr, $op:expr) => {{
+                let l = self.mem_get($data.src1);
+                let r = self.mem_get($data.src2);
+                let res = $fn(|s| self.fatal(s), l, r);
+                self.mem_set($data.dst, res);
+            }};
+        }
         while self.inst_ptr < self.instructions.len() {
             // trace!(
             //     "IP {}: {:?}",
             //     self.inst_ptr, self.instructions[self.inst_ptr]
             // );
+            //
 
-            match self.instructions[self.inst_ptr] {
-                Inst::Load { dst, src } => {
+            match &self.instructions[self.inst_ptr] {
+                &Inst::Load { dst, src } => {
                     // trace!(
                     //     "Load value {} from {:?} to {:?}",
                     //     self.mem_get(src).dbg_display(),
@@ -127,7 +136,7 @@ impl<'a> Vm<'a> {
                     // );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
-                Inst::LoadFromCollection {
+                &Inst::LoadFromCollection {
                     dst,
                     collection,
                     index,
@@ -140,45 +149,41 @@ impl<'a> Vm<'a> {
                             .expect("builtin_get failed"),
                     );
                 }
-                Inst::PushToCollection { collection, value } => {
+                &Inst::PushToCollection { collection, value } => {
                     let collection = self.mem_get(collection);
                     let value = self.mem_get(value);
                     builtin_push(&[collection.clone(), value.clone()])
                         .expect("builtin_push failed");
                 }
-                Inst::AddStackPointer { value } => {
+                &Inst::AddStackPointer { value } => {
                     self.stack_ptr += value as usize;
                     if self.stack_ptr >= self.memory.len() {
                         self.fatal("Stack overflow");
                     }
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
-                Inst::SubStackPointer { value } => {
+                &Inst::SubStackPointer { value } => {
                     self.stack_ptr -= value as usize;
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
-                Inst::BinaryOp {
-                    op,
-                    dst,
-                    src1,
-                    src2,
-                } => {
-                    let res = binary_op(
-                        |s| self.fatal(s),
-                        self.mem_get(src1),
-                        op,
-                        self.mem_get(src2),
-                    );
-                    self.mem_set(dst, res);
-                }
-                Inst::Call {
+                Inst::Add(data) => bop!(add_op, data, Operator::Add),
+                Inst::Sub(data) => bop!(sub_op, data, Operator::Sub),
+                Inst::Mul(data) => bop!(mul_op, data, Operator::Mul),
+                Inst::Div(data) => bop!(div_op, data, Operator::Div),
+                Inst::Lt(data) => bop!(lt_op, data, Operator::Lt),
+                Inst::Lte(data) => bop!(lte_op, data, Operator::Lte),
+                Inst::Gt(data) => bop!(gt_op, data, Operator::Gt),
+                Inst::Gte(data) => bop!(gte_op, data, Operator::Gte),
+                Inst::Eq(data) => bop!(eq_op, data, Operator::Eq),
+                Inst::Neq(data) => bop!(neq_op, data, Operator::Neq),
+                &Inst::Call {
                     dst,
                     func,
                     arg_count,
                 } => {
                     self.call_function(dst, func, arg_count);
                 }
-                Inst::Incr { dst } => match self.mem_get(dst) {
+                &Inst::Incr { dst } => match self.mem_get(dst) {
                     Value::Integer(i) => {
                         self.mem_set(dst, Value::Integer(i + 1));
                     }
@@ -186,7 +191,7 @@ impl<'a> Vm<'a> {
                         self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
                     }
                 },
-                Inst::JumpIfNotInRange { target, range, src } => {
+                &Inst::JumpIfNotInRange { target, range, src } => {
                     // trace!(
                     //     "JumpIfNotInRange to {} if {:?} not in {:?}",
                     //     target,
@@ -220,11 +225,11 @@ impl<'a> Vm<'a> {
                         continue;
                     }
                 }
-                Inst::Jump { target } => {
+                &Inst::Jump { target } => {
                     self.inst_ptr = target;
                     continue;
                 }
-                Inst::JumpIfZero { target, cond } => {
+                &Inst::JumpIfZero { target, cond } => {
                     let cond_value = &self.mem_get(cond);
                     let is_zero = is_zero(|s| self.fatal(s), cond_value);
                     if is_zero {
