@@ -221,7 +221,7 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
     let token_idx = token.index;
 
     match &token.kind {
-        TokenKind::Operator(Operator::Minus) => {
+        TokenKind::Operator(Operator::Sub) => {
             iter.next();
             let expr = parse_primary_expression(iter).unwrap_or_else(|| {
                 fatal("Expected expression after '-'", iter.peek().unwrap());
@@ -233,7 +233,7 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                         token_idx,
                         kind: AstNodeKind::Literal(Value::Integer(0)),
                     }),
-                    Operator::Minus,
+                    Operator::Sub,
                     Box::new(expr),
                 ),
             })

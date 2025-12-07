@@ -57,8 +57,8 @@ pub struct Token {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operator {
-    Plus,
-    Minus,
+    Sum,
+    Sub,
     Multiply,
     Divide,
     Lt,
@@ -78,15 +78,15 @@ impl Operator {
             | Operator::Gte
             | Operator::Eq
             | Operator::Neq => 0,
-            Operator::Plus | Operator::Minus => 1,
+            Operator::Sum | Operator::Sub => 1,
             Operator::Multiply | Operator::Divide => 2,
         }
     }
 
     pub fn dbg_display(&self) -> &'static str {
         match self {
-            Operator::Plus => "+",
-            Operator::Minus => "-",
+            Operator::Sum => "+",
+            Operator::Sub => "-",
             Operator::Multiply => "*",
             Operator::Divide => "/",
             Operator::Lt => "<",
@@ -225,8 +225,8 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
         }
 
         match ch {
-            '+' => tok!(1, TokenKind::Operator(Operator::Plus)),
-            '-' => tok!(1, TokenKind::Operator(Operator::Minus)),
+            '+' => tok!(1, TokenKind::Operator(Operator::Sum)),
+            '-' => tok!(1, TokenKind::Operator(Operator::Sub)),
             '*' => tok!(1, TokenKind::Operator(Operator::Multiply)),
             '/' => tok!(1, TokenKind::Operator(Operator::Divide)),
             '<' => {

@@ -782,7 +782,7 @@ fn binary_op(
 
     if let (Value::String(l), Value::String(r)) = (&left_val, &right_val) {
         return match op {
-            Operator::Plus => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
+            Operator::Sum => Value::String(Rc::from(l.as_ref().to_owned() + r.as_ref())),
             Operator::Eq => Value::Integer((l == r) as i64),
             Operator::Neq => Value::Integer((l != r) as i64),
             _ => unsupported(),
@@ -791,8 +791,8 @@ fn binary_op(
 
     if let (Value::Integer(l), Value::Integer(r)) = (&left_val, &right_val) {
         return Value::Integer(match op {
-            Operator::Plus => l + r,
-            Operator::Minus => l - r,
+            Operator::Sum => l + r,
+            Operator::Sub => l - r,
             Operator::Multiply => l * r,
             Operator::Divide => l / r,
             Operator::Lt => (l < r) as i64,
@@ -818,8 +818,8 @@ fn binary_op(
 
     if let (Value::Float(l), Value::Float(r)) = (&left_prom, &right_prom) {
         return match op {
-            Operator::Plus => Value::Float(l + r),
-            Operator::Minus => Value::Float(l - r),
+            Operator::Sum => Value::Float(l + r),
+            Operator::Sub => Value::Float(l - r),
             Operator::Multiply => Value::Float(l * r),
             Operator::Divide => Value::Float(l / r),
             Operator::Lt => Value::Integer((l < r) as i64),
