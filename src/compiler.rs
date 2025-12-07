@@ -85,14 +85,16 @@ impl Inst {
     }
 }
 
-pub const RESULT_REG1: Addr = Addr::Abs(0);
-pub const RESULT_REG2: Addr = Addr::Abs(1);
-pub const ZERO_REG: Addr = Addr::Abs(2);
-pub const SUCCESS_FLAG_REG: Addr = Addr::Abs(3);
-pub const EMPTY_LIST_REG: Addr = Addr::Abs(4);
-pub const ARG_REG_START: u32 = 10;
-pub const ARG_REG_COUNT: u32 = 10;
-pub const RESERVED_REGS: u32 = 30;
+pub const ARG_REG_START: u32 = 0;
+pub const ARG_REG_COUNT: u32 = 2 << 5;
+const fn reg(n: u32) -> Addr {
+    Addr::Abs(ARG_REG_START + ARG_REG_COUNT + n)
+}
+pub const RESULT_REG1: Addr = reg(0);
+pub const RESULT_REG2: Addr = reg(1);
+pub const ZERO_REG: Addr = reg(2);
+pub const SUCCESS_FLAG_REG: Addr = reg(3);
+pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 10;
 pub const STACK_SIZE: u32 = 2 << 11;
 
 pub struct Compilation<'a> {

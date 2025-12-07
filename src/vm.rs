@@ -1,12 +1,11 @@
-use std::{cell::RefCell, ops::DerefMut, rc::Rc};
+use std::ops::DerefMut;
 
 use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
     compiler::{
-        ARG_REG_START, Addr, Compilation, EMPTY_LIST_REG, Inst, RESERVED_REGS, STACK_SIZE,
-        SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op,
-        neq_op, sub_op,
+        ARG_REG_START, Addr, Compilation, Inst, RESERVED_REGS, STACK_SIZE, SUCCESS_FLAG_REG,
+        add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op, neq_op, sub_op,
     },
     tokenizer::{MapValue, Token, Value},
 };
@@ -34,10 +33,6 @@ impl<'a> Vm<'a> {
             Value::Integer(0);
             RESERVED_REGS as usize + ctx.literals.len() + STACK_SIZE as usize
         ];
-        let Addr::Abs(empty_list_reg) = EMPTY_LIST_REG else {
-            unreachable!();
-        };
-        memory[empty_list_reg as usize] = Value::List(Rc::new(RefCell::new(Vec::new())));
         for (lit_value, lit_reg) in ctx.literals.iter() {
             let Addr::Abs(lit_reg) = *lit_reg else {
                 panic!("Literal register is not absolute");
