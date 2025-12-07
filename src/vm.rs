@@ -30,7 +30,10 @@ enum Inst {
         collection: Addr,
         value: Addr,
     },
-    SetStackPointer {
+    AddStackPointer {
+        value: u32,
+    },
+    SubStackPointer {
         value: u32,
     },
     BinaryOp {
@@ -168,8 +171,14 @@ impl<'a> Compilation<'a> {
     }
 
     fn push_instruction(&mut self, inst: Inst, node: &AstNode) {
-        if let Inst::SetStackPointer { value } = &inst {
-            self.cur_stack_ptr_offset = *value
+        match &inst {
+            Inst::AddStackPointer { value } => {
+                self.cur_stack_ptr_offset += *value;
+            }
+            Inst::SubStackPointer { value } => {
+                self.cur_stack_ptr_offset -= *value;
+            }
+            _ => (),
         }
         self.instructions.push(inst);
         self.ip_to_token.push(node.token_idx);
@@ -314,10 +323,9 @@ impl<'a> Compilation<'a> {
         }
 
         let frame_ptr = self.cur_stack_ptr_offset;
-        let variables_end_sp = self.cur_stack_ptr_offset + cur_scope_vars.len() as u32;
         self.push_instruction(
-            Inst::SetStackPointer {
-                value: variables_end_sp,
+            Inst::AddStackPointer {
+                value: cur_scope_vars.len() as u32,
             },
             node,
         );
@@ -326,16 +334,13 @@ impl<'a> Compilation<'a> {
     }
 
     fn block_end(&mut self, frame_ptr: u32, node: &'a AstNode) {
-        self.push_instruction(Inst::SetStackPointer { value: frame_ptr }, node);
+        self.push_instruction(
+            Inst::SubStackPointer {
+                value: self.cur_stack_ptr_offset - frame_ptr,
+            },
+            node,
+        );
         self.scope_vars.pop();
-
-        if self.scope_vars.is_empty() {
-            for inst in &mut self.instructions {
-                if let Inst::SetStackPointer { value } = inst {
-                    *value += RESERVED_REGS + self.literals.len() as u32;
-                }
-            }
-        }
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {
@@ -637,11 +642,15 @@ impl<'a> Vm<'a> {
                     builtin_push(&[collection.clone(), value.clone()])
                         .expect("builtin_push failed");
                 }
-                Inst::SetStackPointer { value } => {
-                    self.stack_ptr = value as usize;
+                Inst::AddStackPointer { value } => {
+                    self.stack_ptr += value as usize;
                     if self.stack_ptr >= self.memory.len() {
                         self.fatal("Stack overflow");
                     }
+                    debug_assert!(self.stack_ptr >= self.sp_start);
+                }
+                Inst::SubStackPointer { value } => {
+                    self.stack_ptr -= value as usize;
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
                 Inst::BinaryOp {
