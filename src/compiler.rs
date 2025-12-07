@@ -294,6 +294,11 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::Jump { target: 0 }, node);
 
         let fn_start_ip = self.cur_inst_ptr();
+
+        let args_required = ArgsRequred::Exact(args.len() as u32);
+        self.functions
+            .insert(name.clone(), (fn_start_ip, args_required));
+
         let mut ctx = self.block_start(body);
         let mut fn_ctx = FunctionCtx::new(ctx.frame_ptr);
 
@@ -355,11 +360,6 @@ impl<'a> Compilation<'a> {
 
         let fn_end_ip = self.cur_inst_ptr();
         self.instructions[fn_skip_jump_ip].set_jump_target(fn_end_ip);
-
-        let args_required = ArgsRequred::Exact(args.len() as u32);
-
-        self.functions
-            .insert(name.clone(), (fn_start_ip, args_required));
     }
 
     fn compile_return(&mut self, node: &'a AstNode, ctx: &mut BlockCtx, fn_ctx: &mut FunctionCtx) {

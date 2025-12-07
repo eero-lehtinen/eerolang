@@ -1,7 +1,5 @@
 use std::ops::DerefMut;
 
-use log::trace;
-
 use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
@@ -111,6 +109,10 @@ impl<'a> Vm<'a> {
     pub fn run(&mut self) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
+                // trace!(
+                //     "{:?} {:?} {:?} -> {:?}",
+                //     $data.src1, $op, $data.src2, $data.dst
+                // );
                 let l = self.mem_get($data.src1);
                 let r = self.mem_get($data.src2);
                 let res = $fn(|s| self.fatal(s), l, r);
@@ -252,7 +254,7 @@ impl<'a> Vm<'a> {
                     }
                 },
                 &Inst::Jump { target } => {
-                    trace!("Jump from {} to {}", self.inst_ptr, target);
+                    // trace!("Jump from {} to {}", self.inst_ptr, target);
                     self.inst_ptr = target;
                     continue;
                 }
@@ -265,7 +267,7 @@ impl<'a> Vm<'a> {
                             v.dbg_display()
                         )),
                     };
-                    trace!("JumpAddr from {} to {}", self.inst_ptr, target_ip);
+                    // trace!("JumpAddr from {} to {}", self.inst_ptr, target_ip);
                     self.inst_ptr = target_ip;
                     continue;
                 }
@@ -278,11 +280,15 @@ impl<'a> Vm<'a> {
                     }
                 }
             }
-            trace!(
-                "SP {}\n {}",
-                self.stack_ptr - self.sp_start,
-                crate::tokenizer::dbg_display(&self.memory[self.sp_start..self.stack_ptr + 1])
-            );
+            // trace!(
+            //     "SP {}\n {}",
+            //     self.stack_ptr - self.sp_start,
+            //     self.memory[self.sp_start..self.stack_ptr + 1]
+            //         .iter()
+            //         .map(|v| v.dbg_display())
+            //         .collect::<Vec<_>>()
+            //         .join(", ")
+            // );
             self.inst_ptr += 1;
         }
     }
