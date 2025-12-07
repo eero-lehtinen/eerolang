@@ -135,6 +135,7 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     Ok(Value::String(Rc::from(substring.to_owned())))
 }
 
+#[inline]
 pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
     let [target, value] = args else {
         return Err(format!("Expects (list, value), got {}", dbg_display(args)));
@@ -189,6 +190,7 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+#[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     let [target, index] = args else {
         return Err(format!(

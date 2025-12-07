@@ -6,6 +6,7 @@ use crate::vm::Vm;
 
 mod ast_parser;
 mod builtins;
+mod compiler;
 mod tokenizer;
 mod vm;
 
@@ -36,7 +37,7 @@ fn main() {
     let parse_end = Instant::now();
 
     let compile_start = Instant::now();
-    let compilation = vm::compile(&block, &tokens);
+    let compilation = compiler::compile(&block, &tokens);
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();
