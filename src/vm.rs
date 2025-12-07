@@ -594,12 +594,15 @@ impl<'a> Vm<'a> {
     fn mem_get(&self, addr: Addr) -> &Value {
         let pos = self.mem(addr);
         debug_assert!(pos < self.memory.len());
+        // SAFETY: My memory offsets are surely correct.
+        //         A little heap corruption never hurts :)
         unsafe { self.memory.get_unchecked(pos) }
     }
 
     fn mem_set(&mut self, addr: Addr, value: Value) {
         let pos = self.mem(addr);
         debug_assert!(pos < self.memory.len());
+        // SAFETY: Look up ^
         unsafe {
             *self.memory.get_unchecked_mut(pos) = value;
         }
@@ -740,6 +743,7 @@ impl<'a> Vm<'a> {
 
     fn call_function(&mut self, dst: Addr, func: usize, arg_count: u8) {
         debug_assert!(func < self.functions.len());
+        // SAFETY: non-existent functions should be hard to call
         let func_impl = unsafe { self.functions.get_unchecked(func) };
         let args =
             &mut self.memory[ARG_REG_START as usize..ARG_REG_START as usize + arg_count as usize];
