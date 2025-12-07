@@ -123,7 +123,7 @@ impl<'a> Compilation<'a> {
         if let Some(&addr) = self.variables.get(name) {
             addr
         } else {
-            let addr = Addr::Abs(self.variables.len() as u32 + RESERVED_REGS + STACK_SIZE);
+            let addr = Addr::Abs(self.variables.len() as u32 + RESERVED_REGS);
             self.variables.insert(Rc::clone(name), addr);
             addr
         }
@@ -406,6 +406,7 @@ pub struct Vm<'a> {
     tokens: &'a [Token],
     ip: usize,
     sp: usize,
+    sp_start: usize,
     memory: Vec<Value>,
     functions: Vec<ProgramFn>,
 }
@@ -419,7 +420,7 @@ impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
         let mut memory = vec![
             Value::Integer(0);
-            ctx.variables.len() + RESERVED_REGS as usize + STACK_SIZE as usize
+            RESERVED_REGS as usize + ctx.variables.len() + STACK_SIZE as usize
         ];
         let Addr::Abs(empty_list_reg) = EMPTY_LIST_REG else {
             unreachable!();
@@ -437,6 +438,8 @@ impl<'a> Vm<'a> {
             functions[*index] = *func;
         }
 
+        let sp = RESERVED_REGS as usize + ctx.variables.len();
+
         Vm {
             instructions: ctx.instructions,
             ip_to_token: ctx.ip_to_token,
@@ -444,7 +447,8 @@ impl<'a> Vm<'a> {
             ip: 0,
             memory,
             functions,
-            sp: RESERVED_REGS as usize,
+            sp,
+            sp_start: sp,
         }
     }
 
@@ -464,7 +468,7 @@ impl<'a> Vm<'a> {
         match addr {
             Addr::Abs(reg) => reg as usize,
             Addr::Stack(offset) => {
-                debug_assert!(self.sp >= (offset + RESERVED_REGS) as usize);
+                debug_assert!(self.sp - offset as usize >= self.sp_start);
                 self.sp - offset as usize
             }
         }
@@ -520,13 +524,15 @@ impl<'a> Vm<'a> {
                     self.sp += 1;
                     let val = self.mem_get(src).clone();
                     self.mem_set(Addr::Stack(0), val);
-                    debug_assert!(self.sp < RESERVED_REGS as usize + STACK_SIZE as usize);
+                    if self.sp >= self.memory.len() {
+                        self.fatal("Stack overflow");
+                    }
                 }
                 Inst::Pop { dst } => {
                     let val = self.mem_get(Addr::Stack(0)).clone();
                     self.mem_set(dst, val);
                     self.sp -= 1;
-                    debug_assert!(self.sp >= RESERVED_REGS as usize);
+                    debug_assert!(self.sp >= self.sp_start);
                 }
                 Inst::BinaryOp {
                     op,
