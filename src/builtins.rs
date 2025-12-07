@@ -108,16 +108,82 @@ pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
     Ok(Value::List(Rc::new(RefCell::new(parts))))
 }
 
-pub fn builtin_parseint(args: &[Value]) -> ProgramFnRes {
-    let [Value::String(s)] = &args else {
-        arg_bail!("string", args);
+pub fn builtin_int(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("string/float/int", args);
     };
 
-    let int_value = s
-        .parse::<i64>()
-        .map_err(|_| format!("Failed to parse integer from string: {}", s))?;
+    match arg {
+        Value::String(s) => {
+            let int_value = s
+                .parse::<i64>()
+                .map_err(|_| format!("Failed to parse integer from string: {}", s))?;
+            Ok(Value::Integer(int_value))
+        }
+        Value::Float(f) => Ok(Value::Integer(*f as i64)),
+        Value::Integer(i) => Ok(Value::Integer(*i)),
+        _ => arg_bail!("string/float", args),
+    }
+}
 
-    Ok(Value::Integer(int_value))
+pub fn builtin_float(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("string/int", args);
+    };
+
+    match arg {
+        Value::String(s) => {
+            let float_value = s
+                .parse::<f64>()
+                .map_err(|_| format!("Failed to parse float from string: {}", s))?;
+            Ok(Value::Float(float_value))
+        }
+        Value::Integer(i) => Ok(Value::Float(*i as f64)),
+        Value::Float(f) => Ok(Value::Float(*f)),
+        _ => arg_bail!("string/int", args),
+    }
+}
+
+fn write_str(w: &mut impl Write, value: &Value) {
+    match value {
+        Value::Integer(i) => write!(w, "{}", i).unwrap(),
+        Value::Float(f) => write!(w, "{}", f).unwrap(),
+        Value::String(s) => write!(w, "{}", s).unwrap(),
+        Value::List(elems) => {
+            for (i, v) in elems.borrow().iter().enumerate() {
+                if i > 0 {
+                    write!(w, ",").unwrap();
+                }
+                write_str(w, v);
+            }
+        }
+        Value::Map(map) => {
+            let map_ref = map.borrow();
+            let mut first = true;
+            for (key, value) in map_ref.inner.iter() {
+                if !first {
+                    write!(w, ",").unwrap();
+                }
+                first = false;
+                write!(w, "{}", key.dbg_display()).unwrap();
+                write!(w, ":").unwrap();
+                write_str(w, value);
+            }
+        }
+        Value::Range(r) => write!(w, "{}-{}", r.start, r.end).unwrap(),
+    }
+}
+
+pub fn builtin_string(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("value", args);
+    };
+    let mut w = Vec::new();
+    write_str(&mut w, arg);
+
+    let s = String::from_utf8(w).unwrap();
+
+    Ok(Value::String(Rc::from(s)))
 }
 
 pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
@@ -353,7 +419,9 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn)> {
         ("print", builtin_print),
         ("readfile", builtin_readfile),
         ("split", builtin_split),
-        ("parseint", builtin_parseint),
+        ("int", builtin_int),
+        ("float", builtin_float),
+        ("string", builtin_string),
         ("substr", builtin_substr),
         ("list", builtin_list),
         ("map", builtin_map),
