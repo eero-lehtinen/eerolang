@@ -205,7 +205,7 @@ impl<'a> Vm<'a> {
 
                         if iteration_keys_borrow.is_empty() {
                             for key in inner.keys() {
-                                iteration_keys_borrow.push(Value::String(key.clone()));
+                                iteration_keys_borrow.push(Value::from(key));
                             }
                         }
                     };

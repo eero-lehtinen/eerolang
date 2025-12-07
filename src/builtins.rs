@@ -2,7 +2,7 @@ use std::{cell::RefCell, io::Write, rc::Rc};
 
 use foldhash::HashMap;
 
-use crate::tokenizer::{MapValue, Range, Value, arg_display};
+use crate::tokenizer::{MapKey, MapValue, Range, Value, arg_display};
 
 macro_rules! arg_bail {
     ($expected:expr, $args:expr) => {{
@@ -66,7 +66,7 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
                 write!(&mut w, "{{").unwrap();
                 let map_ref = m.borrow();
                 for (j, (key, value)) in map_ref.inner.iter().enumerate() {
-                    write!(&mut w, "\"{}\": ", key).unwrap();
+                    write!(&mut w, "{}: ", key.dbg_display()).unwrap();
                     print_inner!(value);
                     if j < map_ref.inner.len() - 1 {
                         write!(&mut w, ", ").unwrap();
@@ -166,15 +166,15 @@ pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
         .iter()
         .map(|arg| {
             let Value::List(pair) = arg else {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
+                arg_bail!("all arguments to be pairs [string/int key, value]", args);
             };
             let [key, value] = &pair.borrow()[..] else {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
+                arg_bail!("all arguments to be pairs [string/int key, value]", args);
             };
-            let Value::String(key_str) = key else {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
+            let Some(key) = MapKey::try_from(key).ok() else {
+                arg_bail!("all arguments to be pairs [string/int key, value]", args);
             };
-            Ok((key_str.clone(), value.clone()))
+            Ok((key, value.clone()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let map = HashMap::from_iter(values);
@@ -217,12 +217,11 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
             fn_ok!()
         }
         Value::Map(m) => {
-            let key = match &index_or_key {
-                Value::String(s) => s,
-                _ => arg_bail!("map, string, value", args),
+            let Ok(key) = MapKey::try_from(index_or_key) else {
+                arg_bail!("map, int/string, value", args);
             };
             let mut mb = m.borrow_mut();
-            mb.inner.insert(key.clone(), value.clone());
+            mb.inner.insert(key, value.clone());
             mb.iteration_keys.borrow_mut().clear();
             fn_ok!()
         }
@@ -232,13 +231,13 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
 
 #[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
-    let [target, index] = args else {
+    let [target, index_or_key] = args else {
         arg_bail!("list/map/string, int/string if map", args);
     };
 
     match target {
         Value::List(l) => {
-            let index = match index {
+            let index = match index_or_key {
                 Value::Integer(i) => *i as usize,
                 _ => arg_bail!("list, int", args),
             };
@@ -248,17 +247,16 @@ pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
             Ok(l.borrow()[index].clone())
         }
         Value::Map(m) => {
-            let key = match index {
-                Value::String(s) => s.as_ref(),
-                _ => arg_bail!("map, string", args),
+            let Ok(key) = MapKey::try_from(index_or_key) else {
+                arg_bail!("map, int/string", args);
             };
-            match m.borrow().inner.get(key) {
+            match m.borrow().inner.get(&key) {
                 Some(v) => Ok(v.clone()),
-                None => Err(format!("Key not found in map: {}", key)),
+                None => Err(format!("Key not found in map: {}", key.dbg_display())),
             }
         }
         Value::String(s) => {
-            let index = match index {
+            let index = match index_or_key {
                 Value::Integer(i) => *i as usize,
                 _ => arg_bail!("string, int", args),
             };
@@ -281,11 +279,10 @@ pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
 
     match target {
         Value::Map(m) => {
-            let key_str = match key {
-                Value::String(s) => s.as_ref(),
-                _ => arg_bail!("map, string", args),
+            let Ok(key_str) = MapKey::try_from(key) else {
+                arg_bail!("map, string", args);
             };
-            let has_key = m.borrow().inner.contains_key(key_str);
+            let has_key = m.borrow().inner.contains_key(&key_str);
             Ok(Value::Integer(has_key as i64))
         }
         _ => arg_bail!("map, string", args),

@@ -95,10 +95,42 @@ impl Operator {
         }
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MapKey {
+    Integer(i64),
+    String(Rc<String>),
+}
+
+impl From<&MapKey> for Value {
+    fn from(value: &MapKey) -> Self {
+        match value {
+            MapKey::Integer(i) => Value::Integer(*i),
+            MapKey::String(s) => Value::String(s.clone()),
+        }
+    }
+}
+
+impl TryFrom<&Value> for MapKey {
+    type Error = ();
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Integer(i) => Ok(MapKey::Integer(*i)),
+            Value::String(s) => Ok(MapKey::String(s.clone())),
+            _ => Err(()),
+        }
+    }
+}
+
+impl MapKey {
+    pub fn dbg_display(&self) -> String {
+        Value::from(self).dbg_display()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MapValue {
-    pub inner: HashMap<Rc<String>, Value>,
+    pub inner: HashMap<MapKey, Value>,
     // Created on demand for iteration
     pub iteration_keys: Rc<RefCell<Vec<Value>>>,
 }
@@ -142,7 +174,7 @@ impl Value {
                     .inner
                     .iter()
                     .take(2)
-                    .map(|(k, v)| format!("{}: {}", k, v.dbg_display()))
+                    .map(|(k, v)| format!("{}: {}", k.dbg_display(), v.dbg_display()))
                     .collect::<Vec<String>>()
                     .join(", ");
                 if map.inner.len() > 2 {
