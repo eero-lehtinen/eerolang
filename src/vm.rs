@@ -4,7 +4,7 @@ use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
-    ast_parser::{AstNode, AstNodeKind, FOR_ITERABLE_TEMP_VAR, fatal_generic},
+    ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ProgramFn, all_builtins, builtin_get, builtin_push},
     tokenizer::{Operator, Token, Value},
 };
@@ -87,7 +87,7 @@ pub struct Compilation<'a> {
     functions: HashMap<String, (ProgramFn, usize)>,
     tokens: &'a [Token],
     ip_to_token: Vec<usize>,
-    scope_vars: Vec<&'a [String]>,
+    scope_vars: Vec<Vec<&'a str>>,
     cur_stack_ptr_offset: u32,
 }
 
@@ -124,13 +124,13 @@ impl<'a> Compilation<'a> {
         initialized_vars: &mut u32,
         can_init: bool,
     ) -> Addr {
-        // dbg!(name, &self.scope_vars);
+        trace!("{:?}", self.scope_vars);
         let mut frame_ptr = self.cur_stack_ptr_offset;
         let mut current_scope = true;
         let mut tried_to_use = false;
         for vars in self.scope_vars.iter().rev() {
             frame_ptr -= vars.len() as u32;
-            if let Some(pos) = vars.iter().position(|v| v == name) {
+            if let Some(pos) = vars.iter().position(|v| *v == name) {
                 // Initialize this variable if we are allowed and it is the next one to initialize
                 // in this scope.
                 if current_scope {
@@ -146,6 +146,7 @@ impl<'a> Compilation<'a> {
                     }
                 }
                 let offset = self.cur_stack_ptr_offset - frame_ptr - pos as u32 - 1;
+                trace!("variable offset: {} for variable '{}'", offset, name);
                 return Addr::Stack(offset);
             }
             current_scope = false;
@@ -305,15 +306,22 @@ impl<'a> Compilation<'a> {
         let AstNodeKind::Block(_, vars) = &node.kind else {
             self.fatal("Expected block node", node);
         };
+        let mut cur_scope_vars: Vec<&str> = Vec::with_capacity(vars.len());
+        for var in vars {
+            if !self.scope_vars.iter().flatten().any(|v| v == var) {
+                cur_scope_vars.push(var);
+            }
+        }
+
         let frame_ptr = self.cur_stack_ptr_offset;
-        let variables_end_sp = self.cur_stack_ptr_offset + vars.len() as u32;
+        let variables_end_sp = self.cur_stack_ptr_offset + cur_scope_vars.len() as u32;
         self.push_instruction(
             Inst::SetStackPointer {
                 value: variables_end_sp,
             },
             node,
         );
-        self.scope_vars.push(vars);
+        self.scope_vars.push(cur_scope_vars);
         frame_ptr
     }
 
@@ -324,7 +332,7 @@ impl<'a> Compilation<'a> {
         if self.scope_vars.is_empty() {
             for inst in &mut self.instructions {
                 if let Inst::SetStackPointer { value } = inst {
-                    *value += RESERVED_REGS - 1 + self.literals.len() as u32;
+                    *value += RESERVED_REGS + self.literals.len() as u32;
                 }
             }
         }
@@ -365,7 +373,7 @@ impl<'a> Compilation<'a> {
                     let mut initialized_vars = 0;
 
                     let iterable_addr = self.variable_offset(
-                        FOR_ITERABLE_TEMP_VAR,
+                        self.scope_vars.last().unwrap().first().unwrap(),
                         node,
                         &mut initialized_vars,
                         true,
@@ -594,19 +602,19 @@ impl<'a> Vm<'a> {
 
     pub fn run(&mut self) {
         while self.inst_ptr < self.instructions.len() {
-            trace!(
-                "IP {}: {:?}",
-                self.inst_ptr, self.instructions[self.inst_ptr]
-            );
+            // trace!(
+            //     "IP {}: {:?}",
+            //     self.inst_ptr, self.instructions[self.inst_ptr]
+            // );
 
             match self.instructions[self.inst_ptr] {
                 Inst::Load { dst, src } => {
-                    trace!(
-                        "Load value {} from {:?} to {:?}",
-                        self.mem_get(src).dbg_display(),
-                        src,
-                        dst
-                    );
+                    // trace!(
+                    //     "Load value {} from {:?} to {:?}",
+                    //     self.mem_get(src).dbg_display(),
+                    //     src,
+                    //     dst
+                    // );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
                 Inst::LoadFromCollection {
@@ -666,12 +674,12 @@ impl<'a> Vm<'a> {
                     }
                 },
                 Inst::JumpIfNotInRange { target, range, src } => {
-                    trace!(
-                        "JumpIfNotInRange to {} if {:?} not in {:?}",
-                        target,
-                        self.mem_get(src).dbg_display(),
-                        self.mem_get(range).dbg_display()
-                    );
+                    // trace!(
+                    //     "JumpIfNotInRange to {} if {:?} not in {:?}",
+                    //     target,
+                    //     self.mem_get(src).dbg_display(),
+                    //     self.mem_get(range).dbg_display()
+                    // );
                     let iterable_value = self.mem_get(range);
                     let index = self.mem_get(src);
 
@@ -712,11 +720,11 @@ impl<'a> Vm<'a> {
                     }
                 }
             }
-            trace!(
-                "SP {}\n {:?}",
-                self.stack_ptr,
-                self.memory[self.sp_start..self.stack_ptr + 1].to_vec()
-            );
+            // trace!(
+            //     "SP {}\n {}",
+            //     self.stack_ptr,
+            //     dbg_display(&self.memory[self.sp_start..self.stack_ptr + 1])
+            // );
             self.inst_ptr += 1;
         }
     }

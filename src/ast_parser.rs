@@ -86,7 +86,7 @@ fn parse_function_call<'a, I: TokIter<'a>>(
 fn parse_block<'a, I: TokIter<'a>>(
     iter: &mut Peekable<I>,
     top_level: bool,
-    extra_vars: &[&str],
+    extra_vars: Vec<String>,
 ) -> Box<AstNode> {
     let token_idx = if !top_level {
         let lbrace_token = iter.next().cloned();
@@ -102,8 +102,8 @@ fn parse_block<'a, I: TokIter<'a>>(
     };
     let mut block = Vec::new();
     let mut local_vars = Vec::new();
-    for &var in extra_vars {
-        local_vars.push(var.to_string());
+    for var in extra_vars {
+        local_vars.push(var);
     }
     while let Some(token) = iter.peek().cloned() {
         if !top_level && token.kind == TokenKind::RBrace {
@@ -128,8 +128,9 @@ fn parse_block<'a, I: TokIter<'a>>(
     })
 }
 
-// If the iterable is an expression, it needs to be stored somwhere
+// If the iterable is an expression, it needs to be stored somwhere.
 pub const FOR_ITERABLE_TEMP_VAR: &str = "__for_iterable_temp";
+// If an index variable has not been provided, use this.
 pub const FOR_INDEX_TEMP_VAR: &str = "__for_index_temp";
 
 fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
@@ -169,21 +170,23 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
         collection_expr
     );
 
+    let iterable_var = format!("{}{}", FOR_ITERABLE_TEMP_VAR, token_idx);
+
     let index_var = if index_var == "_" {
-        FOR_INDEX_TEMP_VAR
+        format!("{}{}", FOR_INDEX_TEMP_VAR, token_idx)
     } else {
-        index_var.as_str()
+        index_var.to_string()
     };
 
-    let mut extra_vars = vec![FOR_ITERABLE_TEMP_VAR, index_var];
-    if let Some(ref item_var) = item_var {
-        extra_vars.push(item_var.as_str());
+    let mut extra_vars = vec![iterable_var, index_var.clone()];
+    if let Some(item_var) = &item_var {
+        extra_vars.push(item_var.clone());
     }
-    let body = parse_block(iter, false, &extra_vars);
+    let body = parse_block(iter, false, extra_vars);
 
     AstNode {
         token_idx,
-        kind: AstNodeKind::ForLoop(index_var.into(), item_var, Box::new(collection_expr), body),
+        kind: AstNodeKind::ForLoop(index_var, item_var, Box::new(collection_expr), body),
     }
 }
 
@@ -198,14 +201,14 @@ fn parse_if_statement<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
             iter.peek().unwrap(),
         );
     });
-    let block = parse_block(iter, false, &[]);
+    let block = parse_block(iter, false, vec![]);
 
     let else_token = iter.peek();
     let else_block = else_token
         .is_some_and(|t| t.kind == TokenKind::KeywordElse)
         .then(|| {
             iter.next();
-            parse_block(iter, false, &[])
+            parse_block(iter, false, vec![])
         });
     AstNode {
         token_idx,
@@ -386,7 +389,7 @@ pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
 pub fn parse(tokens: &[Token]) -> Box<AstNode> {
     let mut iter = tokens.iter().peekable();
 
-    let block = parse_block(&mut iter, true, &[]);
+    let block = parse_block(&mut iter, true, vec![]);
 
     if iter.peek().is_some() {
         fatal(

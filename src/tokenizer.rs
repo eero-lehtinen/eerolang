@@ -114,11 +114,11 @@ pub fn dbg_display(values: &[Value]) -> String {
     } else {
         let items = values
             .iter()
-            .take(3)
+            .take(6)
             .map(|item| item.dbg_display())
             .collect::<Vec<String>>()
             .join(", ");
-        if values.len() > 3 {
+        if values.len() > 6 {
             format!("[{}, ...]", items)
         } else {
             format!("[{}]", items)
