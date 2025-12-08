@@ -1,7 +1,6 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use foldhash::HashMap;
-use log::trace;
 
 use crate::SOURCE;
 
@@ -510,8 +509,6 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
             }
         }
     }
-
-    trace!("Tokenized source:\n{:#?}", tokens);
 
     tokens
 }

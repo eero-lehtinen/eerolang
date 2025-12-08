@@ -6,10 +6,11 @@ use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
     compiler::{
-        ARG_REG_START, Addr, Compilation, Inst, RESERVED_REGS, STACK_SIZE, SUCCESS_FLAG_REG,
-        add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op, neq_op, sub_op,
+        ARG_REG_START, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, RESERVED_REGS, RESULT_REG1,
+        STACK_SIZE, SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op,
+        mul_op, neq_op, sub_op,
     },
-    tokenizer::{MapValue, Token, Value, find_source_char_col, report_source_pos},
+    tokenizer::{MapValue, Operator, Token, Value, find_source_char_col, report_source_pos},
 };
 
 #[allow(dead_code)]
@@ -21,7 +22,7 @@ pub struct Vm<'a> {
     stack_ptr: usize,
     sp_start: usize,
     memory: Vec<Value>,
-    builtins: Vec<ProgramFn>,
+    builtins: Vec<(ProgramFn, String)>,
 }
 
 fn placeholder_func(_: &[Value]) -> Result<Value, String> {
@@ -39,9 +40,9 @@ impl<'a> Vm<'a> {
             memory[lit_reg.get()] = lit_value.clone();
         }
 
-        let mut builtins = vec![placeholder_func as ProgramFn; ctx.builtins.len()];
-        for (_, (func, index, _)) in ctx.builtins.iter() {
-            builtins[*index] = *func;
+        let mut builtins = vec![(placeholder_func as ProgramFn, String::new()); ctx.builtins.len()];
+        for (name, (func, index, _)) in ctx.builtins.iter() {
+            builtins[*index] = (*func, name.clone());
         }
 
         let sp = RESERVED_REGS as usize + ctx.literals.len();
@@ -108,13 +109,19 @@ impl<'a> Vm<'a> {
     pub fn run(&mut self, step_through: bool) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
-                // trace!(
-                //     "{:?} {:?} {:?} -> {:?}",
-                //     $data.src1, $op, $data.src2, $data.dst
-                // );
                 let l = self.mem_get($data.src1);
                 let r = self.mem_get($data.src2);
                 let res = $fn(|s| self.fatal(s), l, r);
+                trace!(
+                    "Binary op {} (at {}) {} {} (at {}) = {} (at {})",
+                    l.dbg_display(),
+                    $data.src1,
+                    $op.dbg_display(),
+                    r.dbg_display(),
+                    $data.src2,
+                    res.dbg_display(),
+                    $data.dst
+                );
                 self.mem_set($data.dst, res);
             }};
         }
@@ -124,21 +131,31 @@ impl<'a> Vm<'a> {
             //     self.inst_ptr, self.instructions[self.inst_ptr]
             // );
             //
+            let inst_ptr = self.inst_ptr;
 
-            match &self.instructions[self.inst_ptr] {
+            match &self.instructions[inst_ptr] {
                 &Inst::LoadAddr { dst, src } => {
-                    // trace!(
-                    //     "Load value {} from {:?} to {:?}",
-                    //     self.mem_get(src).dbg_display(),
-                    //     src,
-                    //     dst
-                    // );
+                    trace!(
+                        "Load value {} from {} to {}",
+                        self.mem_get(src).dbg_display(),
+                        src,
+                        dst
+                    );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
                 &Inst::LoadInt { dst, value } => {
+                    trace!("Load int {} to {}", value, dst);
                     self.mem_set(dst, value.into());
                 }
                 &Inst::LoadIterationKey { dst, src, index } => {
+                    trace!(
+                        "Load iteration key at index {} (at {}) of {} (at {}) to {}",
+                        self.mem_get(index).dbg_display(),
+                        index,
+                        self.mem_get(src).dbg_display(),
+                        src,
+                        dst
+                    );
                     let iterable = self.mem_get(src);
                     let index = self.mem_get(index);
                     let index = match index {
@@ -183,8 +200,22 @@ impl<'a> Vm<'a> {
                     if let Some(key) = key {
                         self.mem_set(dst, key);
                     }
+                    trace!(
+                        "  -> key: {:?}, success: {}",
+                        self.mem_get(dst).dbg_display(),
+                        self.mem_get(SUCCESS_FLAG_REG).dbg_display()
+                    );
                 }
                 &Inst::LoadCollectionItem { dst, src, key } => {
+                    trace!(
+                        "Load collection item with key {} (at {}) from {} (at {}) to {}",
+                        self.mem_get(key).dbg_display(),
+                        key,
+                        self.mem_get(src).dbg_display(),
+                        src,
+                        dst
+                    );
+
                     let iterable = self.mem_get(src);
                     let key = self.mem_get(key);
                     if let Value::Range(_) = iterable {
@@ -198,6 +229,11 @@ impl<'a> Vm<'a> {
                     }
                 }
                 &Inst::InitMapIterationList { dst: src } => {
+                    trace!(
+                        "Init map iteration list for {} (at {})",
+                        self.mem_get(src).dbg_display(),
+                        src
+                    );
                     // Other types get ignored
                     let map = self.mem_get(src);
                     if let Value::Map(map) = map {
@@ -217,6 +253,7 @@ impl<'a> Vm<'a> {
                     };
                 }
                 &Inst::AddStackPointer { value } => {
+                    trace!("Add {} to stack pointer", value);
                     self.stack_ptr += value as usize;
                     if self.stack_ptr >= self.memory.len() {
                         self.fatal("Stack overflow");
@@ -224,6 +261,7 @@ impl<'a> Vm<'a> {
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
                 &Inst::SubStackPointer { value } => {
+                    trace!("Subtract {} from stack pointer", value);
                     self.stack_ptr -= value as usize;
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
@@ -242,20 +280,31 @@ impl<'a> Vm<'a> {
                     func,
                     arg_count,
                 } => {
+                    trace!(
+                        "Call builtin function {} with {} args, store result in {}",
+                        self.builtins[func as usize].1, arg_count, dst
+                    );
                     self.call_builtin(dst, func, arg_count);
+                    trace!("  -> result: {:?}", self.mem_get(dst).dbg_display());
                 }
-                &Inst::Incr { dst } => match self.mem_get(dst) {
-                    Value::Integer(i) => {
-                        self.mem_set(dst, Value::Integer(i + 1));
+                &Inst::Incr { dst } => {
+                    trace!(
+                        "Increment value {} (at {})",
+                        self.mem_get(dst).dbg_display(),
+                        dst
+                    );
+                    match self.mem_get(dst) {
+                        Value::Integer(i) => {
+                            self.mem_set(dst, Value::Integer(i + 1));
+                        }
+                        v => {
+                            self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
+                        }
                     }
-                    v => {
-                        self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
-                    }
-                },
+                }
                 &Inst::Jump { target } => {
-                    // trace!("Jump from {} to {}", self.inst_ptr, target);
+                    trace!("Jump from {} to {}", self.inst_ptr, target);
                     self.inst_ptr = target as usize;
-                    continue;
                 }
                 &Inst::JumpAddr { target } => {
                     let target_value = self.mem_get(target);
@@ -266,39 +315,65 @@ impl<'a> Vm<'a> {
                             v.dbg_display()
                         )),
                     };
-                    // trace!("JumpAddr from {} to {}", self.inst_ptr, target_ip);
+                    trace!(
+                        "Jump from {} to {} (at {})",
+                        self.inst_ptr, target_ip, target
+                    );
                     self.inst_ptr = target_ip;
-                    continue;
                 }
                 &Inst::JumpIfZero { target, cond } => {
+                    trace!(
+                        "JumpIfZero from {} to {} if {} (at {}) is zero",
+                        self.inst_ptr,
+                        target,
+                        self.mem_get(cond).dbg_display(),
+                        cond
+                    );
                     let cond_value = &self.mem_get(cond);
                     let is_zero = is_zero(|s| self.fatal(s), cond_value);
                     if is_zero {
                         self.inst_ptr = target as usize;
-                        continue;
                     }
                 }
             }
-            trace!(
-                "SP {}\n {}",
-                self.stack_ptr - self.sp_start,
-                self.memory[self.sp_start..self.stack_ptr + 1]
-                    .iter()
-                    .map(|v| v.dbg_display())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+
             if step_through {
-                let inst = &self.instructions[self.inst_ptr];
-                trace!("Inst: {:?}", inst);
-                let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
+                let token = &self.tokens[self.ip_to_token[inst_ptr]];
                 let char_col = find_source_char_col(token.line, token.byte_col);
                 report_source_pos(token.line, char_col, 0);
-                print!("Press Enter to continue...");
+
+                trace!(
+                    "Regs: {}",
+                    (RESULT_REG1.get() as u32..=FN_RETURN_VALUE_REG.get() as u32)
+                        .chain(ARG_REG_START..ARG_REG_START + 6)
+                        .map(|addr| {
+                            format!(
+                                "{}={}",
+                                Addr::abs(addr),
+                                self.mem_get(Addr::abs(addr)).dbg_display()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                trace!(
+                    "Stack: {}",
+                    self.memory[self.sp_start..self.stack_ptr + 1]
+                        .iter()
+                        .map(|v| v.dbg_display())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+
+                trace!("SP {}", self.stack_ptr - self.sp_start);
+
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input).unwrap();
             }
-            self.inst_ptr += 1;
+
+            if self.inst_ptr == inst_ptr {
+                self.inst_ptr += 1;
+            }
         }
     }
 
@@ -306,7 +381,7 @@ impl<'a> Vm<'a> {
     fn call_builtin(&mut self, dst: Addr, func: u32, arg_count: u8) {
         debug_assert!((func as usize) < self.builtins.len());
         // SAFETY: non-existent functions should be hard to call
-        let func_impl = unsafe { self.builtins.get_unchecked(func as usize) };
+        let func_impl = unsafe { self.builtins.get_unchecked(func as usize).0 };
         let args =
             &mut self.memory[ARG_REG_START as usize..ARG_REG_START as usize + arg_count as usize];
         let result = match func_impl(args) {

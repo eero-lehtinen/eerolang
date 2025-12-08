@@ -1,6 +1,6 @@
 use crate::vm::Vm;
 use clap::Parser;
-use log::{error, trace};
+use log::trace;
 use std::{sync::OnceLock, time::Instant};
 
 mod ast_parser;
@@ -19,9 +19,14 @@ struct Cli {
 }
 
 fn main() {
-    env_logger::builder().format_timestamp(None).init();
-
     let cli = Cli::parse();
+
+    let mut log = env_logger::builder();
+    log.format_timestamp(None);
+    if cli.step {
+        log.filter_level(log::LevelFilter::Trace);
+    }
+    log.init();
 
     let source_code = std::fs::read_to_string(cli.source_file).expect("Failed to read source file");
     SOURCE.set(source_code.clone()).unwrap();

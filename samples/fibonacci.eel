@@ -2,7 +2,9 @@ fn fibonacci(n) {
     if n <= 1 {
         return n
     }
-    return fibonacci(n - 1) + fibonacci(n - 2)
+    sum := fibonacci(n - 1) + fibonacci(n - 2)
+    print(sum)
+    return sum
 }
 
-print(fibonacci(2))
+print(fibonacci(4))

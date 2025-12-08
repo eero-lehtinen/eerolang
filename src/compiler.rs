@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{fmt::Display, rc::Rc};
 
 use foldhash::{HashMap, HashMapExt};
 use log::trace;
@@ -42,6 +42,31 @@ impl Addr {
 
     pub fn get(&self) -> usize {
         (self.0 & DATA_MASK) as usize
+    }
+}
+
+impl Display for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_stack() {
+            write!(f, "S{}", self.get())
+        } else if let Some(name) = [
+            ("RES1", RESULT_REG1),
+            ("RES2", RESULT_REG2),
+            ("SUC", SUCCESS_FLAG_REG),
+            ("RETA", FN_CALL_RETURN_ADDR_REG),
+            ("RET", FN_RETURN_VALUE_REG),
+        ]
+        .iter()
+        .find_map(|(name, addr)| if *addr == *self { Some(*name) } else { None })
+        {
+            write!(f, "{}", name)
+        } else if self.get() >= ARG_REG_START as usize
+            && self.get() < ARG_REG_START as usize + ARG_REG_COUNT as usize
+        {
+            write!(f, "ARG{}", self.get() - ARG_REG_START as usize)
+        } else {
+            write!(f, "A{}", self.get())
+        }
     }
 }
 
