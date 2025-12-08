@@ -16,6 +16,10 @@ pub enum Addr {
     Stack(u32),
 }
 
+impl Addr {
+    pub const PLACEHOLDER: Addr = Addr::Abs(u32::MAX);
+}
+
 #[derive(Debug, Clone)]
 pub struct BinaryOpData {
     pub dst: Addr,
@@ -106,11 +110,9 @@ const fn reg(n: u32) -> Addr {
 }
 pub const RESULT_REG1: Addr = reg(0);
 pub const RESULT_REG2: Addr = reg(1);
-pub const ZERO_REG: Addr = reg(2);
-pub const SUCCESS_FLAG_REG: Addr = reg(3);
-pub const PLACEHOLDER_REG: Addr = reg(4);
-pub const FN_CALL_RETURN_ADDR_REG: Addr = reg(5);
-pub const FN_RETURN_VALUE_REG: Addr = reg(6);
+pub const SUCCESS_FLAG_REG: Addr = reg(2);
+pub const FN_CALL_RETURN_ADDR_REG: Addr = reg(3);
+pub const FN_RETURN_VALUE_REG: Addr = reg(4);
 pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 10;
 pub const STACK_SIZE: u32 = 2 << 12;
 
@@ -520,9 +522,9 @@ impl<'a> Compilation<'a> {
 
         let index_addr = self.variable_offset(index_var, node, &mut for_ctx, true);
         self.push_instruction(
-            Inst::LoadAddr {
+            Inst::LoadInt {
                 dst: index_addr,
-                src: ZERO_REG,
+                value: 0,
             },
             node,
         );
@@ -599,7 +601,7 @@ impl<'a> Compilation<'a> {
         // Placeholder
         self.push_instruction(
             Inst::Incr {
-                dst: PLACEHOLDER_REG,
+                dst: Addr::PLACEHOLDER,
             },
             node,
         );
