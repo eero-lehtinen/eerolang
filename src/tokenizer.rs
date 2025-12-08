@@ -1,5 +1,6 @@
-use std::{cell::RefCell, fmt::Display, rc::Rc};
+use std::{cell::RefCell, fmt::Display, io::Write, rc::Rc};
 
+use colored::Colorize;
 use foldhash::HashMap;
 
 use crate::SOURCE;
@@ -24,6 +25,31 @@ pub enum TokenKind {
     KeywordBreak,
     KeywordFn,
     KeywordReturn,
+}
+
+impl TokenKind {
+    pub fn color(&self) -> colored::Color {
+        match self {
+            TokenKind::DeclareAssign | TokenKind::Assign | TokenKind::Operator(_) => {
+                colored::Color::Yellow
+            }
+            TokenKind::LParen
+            | TokenKind::RParen
+            | TokenKind::LBrace
+            | TokenKind::RBrace
+            | TokenKind::Comma => colored::Color::Blue,
+            TokenKind::Literal(_) => colored::Color::Green,
+            TokenKind::Ident(_) => colored::Color::Cyan,
+            TokenKind::KeywordFor
+            | TokenKind::KeywordIn
+            | TokenKind::KeywordIf
+            | TokenKind::KeywordElse
+            | TokenKind::KeywordContinue
+            | TokenKind::KeywordBreak
+            | TokenKind::KeywordFn
+            | TokenKind::KeywordReturn => colored::Color::Magenta,
+        }
+    }
 }
 
 impl Display for TokenKind {
@@ -312,7 +338,7 @@ pub fn report_source_pos(row: usize, char_col: usize, context: u32) {
     }
 }
 
-pub fn tokenize(source: &'_ str) -> Vec<Token> {
+pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut iter = source.char_indices().peekable();
     let mut tbuf = String::new();
@@ -508,6 +534,45 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                 panic_with_pos!(format!("Unexpected character: {}", ch));
             }
         }
+    }
+
+    if show {
+        let source = SOURCE.get().unwrap();
+        let mut stdout = std::io::stdout().lock();
+        let mut line = 0;
+        let mut byte_pos = 0;
+        write!(
+            stdout,
+            "{}",
+            format!("{:4} | ", 1)
+                .color(colored::Color::White)
+                .on_color(colored::Color::Black),
+        )
+        .unwrap();
+        for tok in &tokens {
+            while byte_pos < tok.byte_pos_start {
+                let ch = source.as_bytes()[byte_pos] as char;
+                write!(stdout, "{}", ch).unwrap();
+                if ch == '\n' {
+                    line += 1;
+                    write!(
+                        stdout,
+                        "{}",
+                        format!("{:4} | ", line + 1)
+                            .color(colored::Color::White)
+                            .on_color(colored::Color::Black),
+                    )
+                    .unwrap();
+                }
+                byte_pos += 1;
+            }
+            let c = source[tok.byte_pos_start..tok.byte_pos_end]
+                .color(tok.kind.color())
+                .on_color(colored::Color::Black);
+            byte_pos = tok.byte_pos_end;
+            write!(stdout, "{}", c).unwrap();
+        }
+        writeln!(stdout).unwrap();
     }
 
     tokens

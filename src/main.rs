@@ -14,8 +14,13 @@ static SOURCE: OnceLock<String> = OnceLock::new();
 struct Cli {
     source_file: String,
 
+    /// Step through execution with enter (shows extra stuff if built with debug mode)
     #[clap(short, long)]
     step: bool,
+
+    /// Print tokens with colors
+    #[clap(short, long)]
+    tokens: bool,
 }
 
 fn main() {
@@ -38,7 +43,7 @@ fn main() {
     SOURCE.set(source_code.clone()).unwrap();
 
     let tok_start = Instant::now();
-    let tokens = tokenizer::tokenize(&source_code);
+    let tokens = tokenizer::tokenize(&source_code, cli.tokens);
     let tok_end = Instant::now();
     for token in &tokens {
         trace!("{:?}", token);
