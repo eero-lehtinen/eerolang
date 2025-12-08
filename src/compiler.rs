@@ -11,13 +11,38 @@ use crate::{
 
 /// This is very likely slow, it should just be a different instruction to use the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Addr {
-    Abs(u32),
-    Stack(u32),
-}
+pub struct Addr(u32);
+
+const FLAG_BIT: u32 = 1 << 31;
+const DATA_MASK: u32 = !FLAG_BIT;
 
 impl Addr {
-    pub const PLACEHOLDER: Addr = Addr::Abs(u32::MAX);
+    pub const fn abs(val: u32) -> Self {
+        if val & FLAG_BIT != 0 {
+            panic!("Absolute address too big, would overlap with flag bit");
+        }
+        Addr(val)
+    }
+
+    pub const fn stack(val: u32) -> Self {
+        if val & FLAG_BIT != 0 {
+            panic!("Stack address too big, would overlap with flag bit");
+        }
+        Addr(val | FLAG_BIT)
+    }
+
+    pub fn is_stack(&self) -> bool {
+        (self.0 & FLAG_BIT) != 0
+    }
+
+    #[allow(dead_code)]
+    pub fn is_abs(&self) -> bool {
+        (self.0 & FLAG_BIT) == 0
+    }
+
+    pub fn get(&self) -> usize {
+        (self.0 & DATA_MASK) as usize
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -29,33 +54,13 @@ pub struct BinaryOpData {
 
 #[derive(Debug, Clone)]
 pub enum Inst {
-    LoadAddr {
-        dst: Addr,
-        src: Addr,
-    },
-    LoadInt {
-        dst: Addr,
-        value: i64,
-    },
-    InitMapIterationList {
-        dst: Addr,
-    },
-    LoadIterationKey {
-        dst: Addr,
-        src: Addr,
-        index: Addr,
-    },
-    LoadCollectionItem {
-        dst: Addr,
-        src: Addr,
-        key: Addr,
-    },
-    AddStackPointer {
-        value: u32,
-    },
-    SubStackPointer {
-        value: u32,
-    },
+    LoadAddr { dst: Addr, src: Addr },
+    LoadInt { dst: Addr, value: i32 },
+    InitMapIterationList { dst: Addr },
+    LoadIterationKey { dst: Addr, src: Addr, index: Addr },
+    LoadCollectionItem { dst: Addr, src: Addr, key: Addr },
+    AddStackPointer { value: u32 },
+    SubStackPointer { value: u32 },
     Add(BinaryOpData),
     Sub(BinaryOpData),
     Mul(BinaryOpData),
@@ -66,24 +71,11 @@ pub enum Inst {
     Gte(BinaryOpData),
     Eq(BinaryOpData),
     Neq(BinaryOpData),
-    Incr {
-        dst: Addr,
-    },
-    CallBuiltin {
-        dst: Addr,
-        func: usize,
-        arg_count: u8,
-    },
-    Jump {
-        target: usize,
-    },
-    JumpAddr {
-        target: Addr,
-    },
-    JumpIfZero {
-        target: usize,
-        cond: Addr,
-    },
+    Incr { dst: Addr },
+    CallBuiltin { dst: Addr, func: u32, arg_count: u8 },
+    Jump { target: u32 },
+    JumpAddr { target: Addr },
+    JumpIfZero { target: u32, cond: Addr },
 }
 
 impl Inst {
@@ -94,7 +86,7 @@ impl Inst {
         }
     }
 
-    fn set_jump_target(&mut self, target_ip: usize) {
+    fn set_jump_target(&mut self, target_ip: u32) {
         match self {
             Inst::Jump { target } => *target = target_ip,
             Inst::JumpIfZero { target, .. } => *target = target_ip,
@@ -106,7 +98,7 @@ impl Inst {
 pub const ARG_REG_START: u32 = 0;
 pub const ARG_REG_COUNT: u32 = 2 << 5;
 const fn reg(n: u32) -> Addr {
-    Addr::Abs(ARG_REG_START + ARG_REG_COUNT + n)
+    Addr::abs(ARG_REG_START + ARG_REG_COUNT + n)
 }
 pub const RESULT_REG1: Addr = reg(0);
 pub const RESULT_REG2: Addr = reg(1);
@@ -120,7 +112,7 @@ pub struct Compilation<'a> {
     pub instructions: Vec<Inst>,
     pub literals: Vec<(Value, Addr)>,
     pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
-    pub functions: HashMap<String, (usize, ArgsRequred)>,
+    pub functions: HashMap<String, (u32, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
     pub scope_vars: Vec<Vec<&'a str>>,
@@ -150,8 +142,12 @@ impl<'a> Compilation<'a> {
         fatal_generic(msg, "Fatal error during compilation", token)
     }
 
-    fn cur_inst_ptr(&self) -> usize {
-        self.instructions.len()
+    fn cur_inst_ptr(&self) -> u32 {
+        self.instructions.len() as u32
+    }
+
+    fn inst_mut(&mut self, ip: u32) -> &mut Inst {
+        &mut self.instructions[ip as usize]
     }
 
     fn variable_offset(
@@ -184,7 +180,7 @@ impl<'a> Compilation<'a> {
                 }
                 let offset = self.cur_stack_ptr_offset - frame_ptr - pos as u32 - 1;
                 trace!("variable offset: {} for variable '{}'", offset, name);
-                return Addr::Stack(offset);
+                return Addr::stack(offset);
             }
             current_scope = false;
         }
@@ -199,7 +195,7 @@ impl<'a> Compilation<'a> {
     }
 
     fn make_literal(&mut self, value: &Value) -> Addr {
-        let addr = Addr::Abs(self.literals.len() as u32 + RESERVED_REGS);
+        let addr = Addr::abs(self.literals.len() as u32 + RESERVED_REGS);
         self.literals.push((value.clone(), addr));
         addr
     }
@@ -318,7 +314,7 @@ impl<'a> Compilation<'a> {
         // Load arguments from argument registers to stack variables
         for (arg_idx, arg_name) in args.iter().enumerate() {
             let arg_addr = self.variable_offset(arg_name, node, &mut ctx, true);
-            let arg_reg = Addr::Abs(ARG_REG_START + arg_idx as u32);
+            let arg_reg = Addr::abs(ARG_REG_START + arg_idx as u32);
             self.push_instruction(
                 Inst::LoadAddr {
                     dst: arg_addr,
@@ -361,7 +357,7 @@ impl<'a> Compilation<'a> {
         );
 
         let fn_end_ip = self.cur_inst_ptr();
-        self.instructions[fn_skip_jump_ip].set_jump_target(fn_end_ip);
+        self.inst_mut(fn_skip_jump_ip).set_jump_target(fn_end_ip);
     }
 
     fn compile_return(&mut self, node: &'a AstNode, ctx: &mut BlockCtx, fn_ctx: &mut FunctionCtx) {
@@ -410,7 +406,7 @@ impl<'a> Compilation<'a> {
             self.fatal("Too many arguments in function call", &args[0]);
         }
         for (i, arg) in args.iter().enumerate() {
-            let arg_reg = Addr::Abs(ARG_REG_START + i as u32);
+            let arg_reg = Addr::abs(ARG_REG_START + i as u32);
             let (res_addr, _) = self.compile_expression(arg, arg_reg, ctx);
             if res_addr != arg_reg {
                 self.push_instruction(
@@ -453,7 +449,7 @@ impl<'a> Compilation<'a> {
             self.push_instruction(
                 Inst::CallBuiltin {
                     dst,
-                    func: *func_index,
+                    func: *func_index as u32,
                     arg_count: args.len() as u8,
                 },
                 node,
@@ -468,7 +464,7 @@ impl<'a> Compilation<'a> {
             self.push_instruction(
                 Inst::LoadInt {
                     dst: FN_CALL_RETURN_ADDR_REG,
-                    value: (after_call_ip as i64),
+                    value: after_call_ip as i32,
                 },
                 node,
             );
@@ -576,11 +572,12 @@ impl<'a> Compilation<'a> {
         );
 
         let loop_end_ip = self.cur_inst_ptr();
-        self.instructions[for_exit_jump_ip].set_jump_target(loop_end_ip);
+        self.inst_mut(for_exit_jump_ip).set_jump_target(loop_end_ip);
 
         for continue_ip in &loop_ctx.continues {
-            self.instructions[*continue_ip].set_incr_dst(index_addr);
-            self.instructions[*continue_ip + 1].set_jump_target(for_load_key_ip);
+            self.inst_mut(*continue_ip).set_incr_dst(index_addr);
+            self.inst_mut(*continue_ip + 1)
+                .set_jump_target(for_load_key_ip);
         }
 
         self.block_end(body, for_ctx);
@@ -588,7 +585,8 @@ impl<'a> Compilation<'a> {
         let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
 
         for break_ip in &loop_ctx.breaks {
-            self.instructions[*break_ip].set_jump_target(loop_end_after_sp_reset_ip);
+            self.inst_mut(*break_ip)
+                .set_jump_target(loop_end_after_sp_reset_ip);
         }
     }
 
@@ -599,12 +597,7 @@ impl<'a> Compilation<'a> {
         }
         loop_ctx.continues.push(self.cur_inst_ptr());
         // Placeholder
-        self.push_instruction(
-            Inst::Incr {
-                dst: Addr::PLACEHOLDER,
-            },
-            node,
-        );
+        self.push_instruction(Inst::Incr { dst: Addr::abs(0) }, node);
         // Placeholder
         self.push_instruction(Inst::Jump { target: 0 }, node);
     }
@@ -660,15 +653,15 @@ impl<'a> Compilation<'a> {
             self.push_instruction(Inst::Jump { target: 0 }, node);
 
             let else_start_ip = self.cur_inst_ptr();
-            self.instructions[if_jump_ip].set_jump_target(else_start_ip);
+            self.instructions[if_jump_ip as usize].set_jump_target(else_start_ip);
 
             self.compile_block_full(else_block, loop_ctx, fn_ctx);
 
             let after_else_ip = self.cur_inst_ptr();
-            self.instructions[else_jump_ip].set_jump_target(after_else_ip);
+            self.instructions[else_jump_ip as usize].set_jump_target(after_else_ip);
         } else {
             let after_if_ip = self.cur_inst_ptr();
-            self.instructions[if_jump_ip].set_jump_target(after_if_ip);
+            self.instructions[if_jump_ip as usize].set_jump_target(after_if_ip);
         }
     }
 
@@ -762,8 +755,8 @@ impl BlockCtx {
 struct LoopCtx {
     frame_ptr: u32,
     stack_ptr: u32,
-    breaks: Vec<usize>,
-    continues: Vec<usize>,
+    breaks: Vec<u32>,
+    continues: Vec<u32>,
 }
 
 impl LoopCtx {

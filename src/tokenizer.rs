@@ -211,6 +211,12 @@ impl From<i64> for Value {
     }
 }
 
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Value::Integer(value as i64)
+    }
+}
+
 impl From<bool> for Value {
     fn from(value: bool) -> Self {
         Value::Integer(i64::from(value))

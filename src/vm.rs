@@ -34,10 +34,7 @@ impl<'a> Vm<'a> {
             RESERVED_REGS as usize + ctx.literals.len() + STACK_SIZE as usize
         ];
         for (lit_value, lit_reg) in ctx.literals.iter() {
-            let Addr::Abs(lit_reg) = *lit_reg else {
-                panic!("Literal register is not absolute");
-            };
-            memory[lit_reg as usize] = lit_value.clone();
+            memory[lit_reg.get()] = lit_value.clone();
         }
 
         let mut builtins = vec![placeholder_func as ProgramFn; ctx.builtins.len()];
@@ -73,17 +70,17 @@ impl<'a> Vm<'a> {
 
     #[inline]
     fn mem(&self, addr: Addr) -> usize {
-        match addr {
-            Addr::Abs(addr) => addr as usize,
-            Addr::Stack(offset) => {
-                // trace!(
-                //     "Stack offset {}, pos: {}",
-                //     offset,
-                //     self.stack_ptr - offset as usize
-                // );
-                debug_assert!(self.stack_ptr - offset as usize >= self.sp_start);
-                self.stack_ptr - offset as usize
-            }
+        if addr.is_stack() {
+            let offset = addr.get();
+            // trace!(
+            //     "Stack offset {}, pos: {}",
+            //     offset,
+            //     self.stack_ptr - offset as usize
+            // );
+            debug_assert!(self.stack_ptr - offset >= self.sp_start);
+            self.stack_ptr - offset
+        } else {
+            addr.get()
         }
     }
 
@@ -255,7 +252,7 @@ impl<'a> Vm<'a> {
                 },
                 &Inst::Jump { target } => {
                     // trace!("Jump from {} to {}", self.inst_ptr, target);
-                    self.inst_ptr = target;
+                    self.inst_ptr = target as usize;
                     continue;
                 }
                 &Inst::JumpAddr { target } => {
@@ -275,7 +272,7 @@ impl<'a> Vm<'a> {
                     let cond_value = &self.mem_get(cond);
                     let is_zero = is_zero(|s| self.fatal(s), cond_value);
                     if is_zero {
-                        self.inst_ptr = target;
+                        self.inst_ptr = target as usize;
                         continue;
                     }
                 }
@@ -294,10 +291,10 @@ impl<'a> Vm<'a> {
     }
 
     #[inline]
-    fn call_builtin(&mut self, dst: Addr, func: usize, arg_count: u8) {
-        debug_assert!(func < self.builtins.len());
+    fn call_builtin(&mut self, dst: Addr, func: u32, arg_count: u8) {
+        debug_assert!((func as usize) < self.builtins.len());
         // SAFETY: non-existent functions should be hard to call
-        let func_impl = unsafe { self.builtins.get_unchecked(func) };
+        let func_impl = unsafe { self.builtins.get_unchecked(func as usize) };
         let args =
             &mut self.memory[ARG_REG_START as usize..ARG_REG_START as usize + arg_count as usize];
         let result = match func_impl(args) {
