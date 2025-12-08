@@ -1,6 +1,6 @@
 use std::{sync::OnceLock, time::Instant};
 
-use log::error;
+use log::{error, trace};
 
 use crate::vm::Vm;
 
@@ -28,9 +28,9 @@ fn main() {
     let tok_start = Instant::now();
     let tokens = tokenizer::tokenize(&source_code);
     let tok_end = Instant::now();
-    // for token in &tokens {
-    //     println!("{:?}", token);
-    // }
+    for token in &tokens {
+        trace!("{:?}", token);
+    }
 
     let parse_start = Instant::now();
     let block = ast_parser::parse(&tokens);
