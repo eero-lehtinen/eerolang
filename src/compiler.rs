@@ -79,6 +79,7 @@ pub struct BinaryOpData {
 
 #[derive(Debug, Clone)]
 pub enum Inst {
+    Nop,
     LoadAddr { dst: Addr, src: Addr },
     LoadInt { dst: Addr, value: i32 },
     InitMapIterationList { dst: Addr },
@@ -470,15 +471,27 @@ impl<'a> Compilation<'a> {
                 unexpected_args!(args_req);
             }
 
-            let after_call_ip = self.cur_inst_ptr() + 2;
-            // Store return address.
+            // Store return address (placeholder)
+            let load_ret_addr_ip = self.cur_inst_ptr();
+            self.push_instruction(Inst::Nop, node);
+
+            // Store temporaries to survive the function call.
+            self.push_instruction(Inst::AddStackPointer { value: 2 }, node);
             self.push_instruction(
-                Inst::LoadInt {
-                    dst: FN_CALL_RETURN_ADDR_REG,
-                    value: after_call_ip as i32,
+                Inst::LoadAddr {
+                    dst: Addr::stack(1),
+                    src: RESULT_REG1,
                 },
                 node,
             );
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst: Addr::stack(0),
+                    src: RESULT_REG2,
+                },
+                node,
+            );
+
             // Jump to the function.
             self.push_instruction(
                 Inst::Jump {
@@ -486,6 +499,30 @@ impl<'a> Compilation<'a> {
                 },
                 node,
             );
+
+            // Store return address (placeholder)
+            *self.inst_mut(load_ret_addr_ip) = Inst::LoadInt {
+                dst: FN_CALL_RETURN_ADDR_REG,
+                value: self.cur_inst_ptr() as i32,
+            };
+
+            // Restore temporaries after the function call.
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst: RESULT_REG2,
+                    src: Addr::stack(0),
+                },
+                node,
+            );
+            self.push_instruction(
+                Inst::LoadAddr {
+                    dst: RESULT_REG1,
+                    src: Addr::stack(1),
+                },
+                node,
+            );
+            self.push_instruction(Inst::SubStackPointer { value: 2 }, node);
+
             // Load return value to the correct location.
             self.push_instruction(
                 Inst::LoadAddr {

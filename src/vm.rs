@@ -134,6 +134,9 @@ impl<'a> Vm<'a> {
             let inst_ptr = self.inst_ptr;
 
             match &self.instructions[inst_ptr] {
+                &Inst::Nop => {
+                    trace!("Nop");
+                }
                 &Inst::LoadAddr { dst, src } => {
                     trace!(
                         "Load value {} from {} to {}",
