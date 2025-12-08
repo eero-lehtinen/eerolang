@@ -28,7 +28,13 @@ fn main() {
     }
     log.init();
 
-    let source_code = std::fs::read_to_string(cli.source_file).expect("Failed to read source file");
+    let source_code = match std::fs::read_to_string(cli.source_file) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Error reading source file: {}", e);
+            std::process::exit(1);
+        }
+    };
     SOURCE.set(source_code.clone()).unwrap();
 
     let tok_start = Instant::now();
