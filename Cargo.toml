@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.5.53", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+] }
 env_logger = { version = "0.11.8", default-features = false }
 foldhash = "0.2.0"
 log = "0.4.29"

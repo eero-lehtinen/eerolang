@@ -1,8 +1,7 @@
-use std::{sync::OnceLock, time::Instant};
-
-use log::{error, trace};
-
 use crate::vm::Vm;
+use clap::Parser;
+use log::{error, trace};
+use std::{sync::OnceLock, time::Instant};
 
 mod ast_parser;
 mod builtins;
@@ -11,18 +10,20 @@ mod tokenizer;
 mod vm;
 
 static SOURCE: OnceLock<String> = OnceLock::new();
+#[derive(Parser)]
+struct Cli {
+    source_file: String,
+
+    #[clap(short, long)]
+    step: bool,
+}
 
 fn main() {
     env_logger::builder().format_timestamp(None).init();
 
-    let args = std::env::args().collect::<Vec<String>>();
-    if args.len() < 2 {
-        error!("Usage: {} <source_file>", args[0]);
-        return;
-    }
+    let cli = Cli::parse();
 
-    let source_file = &args[1];
-    let source_code = std::fs::read_to_string(source_file).expect("Failed to read source file");
+    let source_code = std::fs::read_to_string(cli.source_file).expect("Failed to read source file");
     SOURCE.set(source_code.clone()).unwrap();
 
     let tok_start = Instant::now();
@@ -41,7 +42,7 @@ fn main() {
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();
-    Vm::new(compilation).run();
+    Vm::new(compilation).run(cli.step);
     let exec_end = Instant::now();
 
     println!(

@@ -4,7 +4,7 @@ use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
-    ast_parser::{AstNode, AstNodeKind, FN_CALL_RETURN_ADDR_VAR, fatal_generic},
+    ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
     tokenizer::{Operator, Token, Value},
 };
@@ -115,7 +115,7 @@ pub struct Compilation<'a> {
     pub functions: HashMap<String, (u32, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
-    pub scope_vars: Vec<Vec<&'a str>>,
+    pub scope_var_decls: Vec<Vec<(&'a str, usize)>>,
     cur_stack_ptr_offset: u32,
 }
 
@@ -132,7 +132,7 @@ impl<'a> Compilation<'a> {
             functions: HashMap::new(),
             tokens,
             ip_to_token: Vec::new(),
-            scope_vars: Vec::new(),
+            scope_var_decls: Vec::new(),
             cur_stack_ptr_offset: 0,
         }
     }
@@ -150,48 +150,33 @@ impl<'a> Compilation<'a> {
         &mut self.instructions[ip as usize]
     }
 
-    fn variable_offset(
-        &mut self,
-        name: &str,
-        node: &AstNode,
-        ctx: &mut BlockCtx,
-        can_init: bool,
-    ) -> Addr {
-        trace!("{:?}", self.scope_vars);
+    fn variable_offset(&mut self, name: &str, node: &AstNode) -> Addr {
+        trace!("{:?}", self.scope_var_decls);
+
+        let pos = self.tokens[node.token_idx].byte_pos_start;
+
         let mut frame_ptr = self.cur_stack_ptr_offset;
-        let mut current_scope = true;
-        let mut tried_to_use = false;
-        for vars in self.scope_vars.iter().rev() {
-            frame_ptr -= vars.len() as u32;
-            if let Some(pos) = vars.iter().position(|v| *v == name) {
-                // Initialize this variable if we are allowed and it is the next one to initialize
-                // in this scope.
-                if current_scope {
-                    if can_init && pos as u32 == ctx.initialized_vars {
-                        ctx.initialized_vars = pos as u32 + 1;
+        for decls in self.scope_var_decls.iter().rev() {
+            frame_ptr -= decls.len() as u32;
+            for (i, (dname, dpos)) in decls.iter().enumerate() {
+                if *dname == name {
+                    if *dpos > pos {
+                        self.fatal(
+                            &format!("Variable '{}' used before initialization", name),
+                            node,
+                        );
                     }
-                    // If the variable is not the next to initialize, we are trying to access it too
-                    // soon, but it could still exist in an outer scope.
-                    else if pos as u32 >= ctx.initialized_vars {
-                        tried_to_use = true;
-                        current_scope = false;
-                        continue;
-                    }
+                    let offset = self.cur_stack_ptr_offset - frame_ptr - i as u32 - 1;
+                    trace!("variable offset: {} for variable '{}'", offset, name);
+                    return Addr::stack(offset);
                 }
-                let offset = self.cur_stack_ptr_offset - frame_ptr - pos as u32 - 1;
-                trace!("variable offset: {} for variable '{}'", offset, name);
-                return Addr::stack(offset);
             }
-            current_scope = false;
         }
 
-        if tried_to_use {
-            self.fatal(
-                &format!("Variable '{}' used before initialization", name),
-                node,
-            );
-        }
-        self.fatal(&format!("Undefined variable: {}", name), node);
+        self.fatal(
+            &format!("Variable '{}' used before declaration", name),
+            node,
+        );
     }
 
     fn make_literal(&mut self, value: &Value) -> Addr {
@@ -205,11 +190,13 @@ impl<'a> Compilation<'a> {
         self.ip_to_token.push(node.token_idx);
     }
 
-    fn compile_assignment(&mut self, node: &AstNode, ctx: &mut BlockCtx) {
-        let AstNodeKind::Assign(var, expr) = &node.kind else {
-            unreachable!();
+    fn compile_assignment(&mut self, node: &AstNode, ctx: &mut Context) {
+        let (var, expr) = match &node.kind {
+            AstNodeKind::DeclareAssign(var, expr) => (var, expr),
+            AstNodeKind::Assign(var, expr) => (var, expr),
+            _ => unreachable!(),
         };
-        let var_addr = self.variable_offset(var, node, ctx, true);
+        let var_addr = self.variable_offset(var, node);
         let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
         if expr_addr != var_addr {
             self.push_instruction(
@@ -226,11 +213,11 @@ impl<'a> Compilation<'a> {
         &mut self,
         expr: &AstNode,
         dst_suggestion: Addr,
-        ctx: &mut BlockCtx,
+        ctx: &mut Context,
     ) -> (Addr, Option<Value>) {
         match &expr.kind {
             AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
-            AstNodeKind::Variable(name) => (self.variable_offset(name, expr, ctx, false), None),
+            AstNodeKind::Variable(name) => (self.variable_offset(name, expr), None),
             AstNodeKind::BinaryOp(left, op, right) => {
                 let (laddr, lval) = self.compile_expression(left, RESULT_REG1, ctx);
                 let (raddr, rval) = self.compile_expression(right, RESULT_REG2, ctx);
@@ -271,7 +258,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_function_definition(&mut self, node: &'a AstNode) {
+    fn compile_function_definition(&mut self, node: &'a AstNode, ctx: &Context) {
         let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
             unreachable!();
         };
@@ -297,12 +284,10 @@ impl<'a> Compilation<'a> {
         self.functions
             .insert(name.clone(), (fn_start_ip, args_required));
 
-        let mut ctx = self.block_start(body);
-        let mut fn_ctx = FunctionCtx::new(ctx.frame_ptr);
+        let mut fn_ctx = self.block_start(body, ctx, Some(node), None);
 
         // Store return address in a stack variable.
-        let return_addr_var_addr =
-            self.variable_offset(FN_CALL_RETURN_ADDR_VAR, node, &mut ctx, true);
+        let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
         self.push_instruction(
             Inst::LoadAddr {
                 dst: return_addr_var_addr,
@@ -312,8 +297,9 @@ impl<'a> Compilation<'a> {
         );
 
         // Load arguments from argument registers to stack variables
-        for (arg_idx, arg_name) in args.iter().enumerate() {
-            let arg_addr = self.variable_offset(arg_name, node, &mut ctx, true);
+        for (arg_idx, arg) in args.iter().enumerate() {
+            let arg_name = arg.get_var_name().expect("Parsed correctly");
+            let arg_addr = self.variable_offset(arg_name, arg);
             let arg_reg = Addr::abs(ARG_REG_START + arg_idx as u32);
             self.push_instruction(
                 Inst::LoadAddr {
@@ -324,7 +310,7 @@ impl<'a> Compilation<'a> {
             );
         }
 
-        self.compile_block(body, &mut ctx, &mut LoopCtx::default(), &mut fn_ctx);
+        self.compile_block(body, &mut fn_ctx);
 
         // Default return value is 1
         self.push_instruction(
@@ -346,7 +332,7 @@ impl<'a> Compilation<'a> {
         );
 
         // Clean up stack frame.
-        self.block_end(body, ctx);
+        self.block_end(body, &fn_ctx);
 
         // Jump back to return address.
         self.push_instruction(
@@ -360,7 +346,7 @@ impl<'a> Compilation<'a> {
         self.inst_mut(fn_skip_jump_ip).set_jump_target(fn_end_ip);
     }
 
-    fn compile_return(&mut self, node: &'a AstNode, ctx: &mut BlockCtx, fn_ctx: &mut FunctionCtx) {
+    fn compile_return(&mut self, node: &'a AstNode, ctx: &mut Context) {
         let AstNodeKind::Return(expr) = &node.kind else {
             unreachable!();
         };
@@ -377,7 +363,7 @@ impl<'a> Compilation<'a> {
 
         // Store return address back to the return address register.
         // TODO: This might not be needed if we clean up the stack in the caller.
-        let return_addr_var_addr = self.variable_offset(FN_CALL_RETURN_ADDR_VAR, node, ctx, false);
+        let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
         self.push_instruction(
             Inst::LoadAddr {
                 dst: FN_CALL_RETURN_ADDR_REG,
@@ -387,7 +373,7 @@ impl<'a> Compilation<'a> {
         );
 
         // Clean up stack frame.
-        let sub_sp = self.cur_stack_ptr_offset - fn_ctx.frame_ptr;
+        let sub_sp = self.cur_stack_ptr_offset - ctx.fn_frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
         }
@@ -401,7 +387,7 @@ impl<'a> Compilation<'a> {
         );
     }
 
-    fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut BlockCtx) {
+    fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut Context) {
         if args.len() > ARG_REG_COUNT as usize {
             self.fatal("Too many arguments in function call", &args[0]);
         }
@@ -420,7 +406,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_function_call(&mut self, dst: Addr, node: &AstNode, ctx: &mut BlockCtx) {
+    fn compile_function_call(&mut self, dst: Addr, node: &AstNode, ctx: &mut Context) {
         let AstNodeKind::FunctionCall(name, args) = &node.kind else {
             unreachable!();
         };
@@ -488,21 +474,15 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_for_loop(&mut self, node: &'a AstNode, fn_ctx: &mut FunctionCtx) {
-        let AstNodeKind::ForLoop(index_var, key_var, item_var, collection, body) = &node.kind
-        else {
+    fn compile_for_loop(&mut self, node: &'a AstNode, ctx: &Context) {
+        let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind else {
             unreachable!();
         };
-        let mut for_ctx = self.block_start(body);
-        let mut loop_ctx = LoopCtx::new(for_ctx.frame_ptr, self.cur_stack_ptr_offset);
+        let mut for_ctx = self.block_start(body, ctx, None, Some(node));
+        for_ctx.loop_frame_ptr = ctx.block_frame_ptr;
+        for_ctx.loop_stack_ptr = self.cur_stack_ptr_offset;
 
-        let iterable_addr = self.variable_offset(
-            self.scope_vars.last().unwrap().first().unwrap(),
-            node,
-            &mut for_ctx,
-            true,
-        );
-
+        let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
         let (addr, _) = self.compile_expression(collection, iterable_addr, &mut for_ctx);
         if addr != iterable_addr {
             self.push_instruction(
@@ -516,7 +496,7 @@ impl<'a> Compilation<'a> {
 
         self.push_instruction(Inst::InitMapIterationList { dst: iterable_addr }, node);
 
-        let index_addr = self.variable_offset(index_var, node, &mut for_ctx, true);
+        let index_addr = self.variable_offset(Self::FOR_INDEX_TEMP_VAR, node);
         self.push_instruction(
             Inst::LoadInt {
                 dst: index_addr,
@@ -527,14 +507,22 @@ impl<'a> Compilation<'a> {
 
         let for_load_key_ip = self.cur_inst_ptr();
 
-        let key_addr = self.variable_offset(key_var, node, &mut for_ctx, true);
+        let (key_var_name, key_node) = if let Some(key_node) = key {
+            (
+                key_node.get_var_name().expect("Parsed correctly"),
+                key_node.as_ref(),
+            )
+        } else {
+            (Self::FOR_KEY_TEMP_VAR, node)
+        };
+        let key_addr = self.variable_offset(key_var_name, key_node);
         self.push_instruction(
             Inst::LoadIterationKey {
                 dst: key_addr,
                 src: iterable_addr,
                 index: index_addr,
             },
-            node,
+            key_node,
         );
 
         let for_exit_jump_ip = self.cur_inst_ptr();
@@ -547,21 +535,20 @@ impl<'a> Compilation<'a> {
             node,
         );
 
-        if let Some(item_var) = item_var {
-            let item_addr = self.variable_offset(item_var, node, &mut for_ctx, true);
+        if let Some(item_node) = item {
+            let item_var_name = item_node.get_var_name().expect("Parsed correctly");
+            let item_addr = self.variable_offset(item_var_name, item_node);
             self.push_instruction(
                 Inst::LoadCollectionItem {
                     dst: item_addr,
                     src: iterable_addr,
                     key: key_addr,
                 },
-                node,
+                item_node,
             );
-        } else {
-            for_ctx.initialized_vars += 1;
         }
 
-        self.compile_block(body, &mut for_ctx, &mut loop_ctx, fn_ctx);
+        self.compile_block(body, &mut for_ctx);
 
         self.push_instruction(Inst::Incr { dst: index_addr }, node);
         self.push_instruction(
@@ -574,51 +561,45 @@ impl<'a> Compilation<'a> {
         let loop_end_ip = self.cur_inst_ptr();
         self.inst_mut(for_exit_jump_ip).set_jump_target(loop_end_ip);
 
-        for continue_ip in &loop_ctx.continues {
+        for continue_ip in &for_ctx.loop_continues {
             self.inst_mut(*continue_ip).set_incr_dst(index_addr);
             self.inst_mut(*continue_ip + 1)
                 .set_jump_target(for_load_key_ip);
         }
 
-        self.block_end(body, for_ctx);
+        self.block_end(body, &for_ctx);
 
         let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
 
-        for break_ip in &loop_ctx.breaks {
+        for break_ip in &for_ctx.loop_breaks {
             self.inst_mut(*break_ip)
                 .set_jump_target(loop_end_after_sp_reset_ip);
         }
     }
 
-    fn compile_continue(&mut self, node: &'a AstNode, loop_ctx: &mut LoopCtx) {
-        let sub_sp = self.cur_stack_ptr_offset - loop_ctx.stack_ptr;
+    fn compile_continue(&mut self, node: &'a AstNode, ctx: &mut Context) {
+        let sub_sp = self.cur_stack_ptr_offset - ctx.loop_stack_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
         }
-        loop_ctx.continues.push(self.cur_inst_ptr());
+        ctx.loop_continues.push(self.cur_inst_ptr());
         // Placeholder
         self.push_instruction(Inst::Incr { dst: Addr::abs(0) }, node);
         // Placeholder
         self.push_instruction(Inst::Jump { target: 0 }, node);
     }
 
-    fn compile_break(&mut self, node: &'a AstNode, loop_ctx: &mut LoopCtx) {
-        let sub_sp = self.cur_stack_ptr_offset - loop_ctx.frame_ptr;
+    fn compile_break(&mut self, node: &'a AstNode, ctx: &mut Context) {
+        let sub_sp = self.cur_stack_ptr_offset - ctx.loop_frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
         }
-        loop_ctx.breaks.push(self.cur_inst_ptr());
+        ctx.loop_breaks.push(self.cur_inst_ptr());
         // Placeholder
         self.push_instruction(Inst::Jump { target: 0 }, node);
     }
 
-    fn compile_if_statement(
-        &mut self,
-        node: &'a AstNode,
-        ctx: &mut BlockCtx,
-        loop_ctx: &mut LoopCtx,
-        fn_ctx: &mut FunctionCtx,
-    ) {
+    fn compile_if_statement(&mut self, node: &'a AstNode, ctx: &mut Context) {
         let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
             unreachable!();
         };
@@ -628,9 +609,9 @@ impl<'a> Compilation<'a> {
 
         if let Some(const_cond_true) = const_cond_true {
             if const_cond_true {
-                self.compile_block_full(block, loop_ctx, fn_ctx);
+                self.compile_block_full(block, ctx);
             } else if let Some(else_block) = else_block {
-                self.compile_block_full(else_block, loop_ctx, fn_ctx);
+                self.compile_block_full(else_block, ctx);
             }
             return;
         }
@@ -645,7 +626,7 @@ impl<'a> Compilation<'a> {
             node,
         );
 
-        self.compile_block_full(block, loop_ctx, fn_ctx);
+        self.compile_block_full(block, ctx);
 
         if let Some(else_block) = else_block {
             let else_jump_ip = self.cur_inst_ptr();
@@ -655,7 +636,7 @@ impl<'a> Compilation<'a> {
             let else_start_ip = self.cur_inst_ptr();
             self.instructions[if_jump_ip as usize].set_jump_target(else_start_ip);
 
-            self.compile_block_full(else_block, loop_ctx, fn_ctx);
+            self.compile_block_full(else_block, ctx);
 
             let after_else_ip = self.cur_inst_ptr();
             self.instructions[else_jump_ip as usize].set_jump_target(after_else_ip);
@@ -665,70 +646,142 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn block_start(&mut self, node: &'a AstNode) -> BlockCtx {
-        let AstNodeKind::Block(_, vars) = &node.kind else {
+    // Temporary variable to store function call return address. Needed for nested function calls.
+    const FN_CALL_RETURN_ADDR_VAR: &'static str = "__fn_call_return_addr";
+
+    // If the iterable is an expression, it needs to be stored somwhere.
+    const FOR_ITERABLE_TEMP_VAR: &'static str = "__for_iterable_temp";
+    // Index needs to be stored somewhere.
+    const FOR_INDEX_TEMP_VAR: &'static str = "__for_index_temp";
+    // Even if not assigned to a variable, the key needs to be stored somewhere.
+    const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
+
+    fn block_start(
+        &mut self,
+        node: &'a AstNode,
+        prev_ctx: &Context,
+        fn_node: Option<&'a AstNode>,
+        loop_node: Option<&'a AstNode>,
+    ) -> Context {
+        let AstNodeKind::Block(nodes) = &node.kind else {
             self.fatal("Expected block node", node);
         };
-        let mut cur_scope_vars: Vec<&str> = Vec::with_capacity(vars.len());
-        for var in vars {
-            if !self.scope_vars.iter().flatten().any(|v| v == var) {
-                cur_scope_vars.push(var);
+
+        let mut cur_scope_var_decls: Vec<(&'a str, usize)> = Vec::new();
+        macro_rules! add_decl_node {
+            ($decl:expr) => {
+                let var_name = $decl.get_var_name().expect("Parsed correctly");
+                if cur_scope_var_decls.iter().any(|(v, _)| *v == var_name) {
+                    self.fatal(
+                        &format!("Variable '{}' already declared in this scope", var_name),
+                        $decl,
+                    );
+                }
+                let token = &self.tokens[$decl.token_idx];
+                cur_scope_var_decls.push((var_name, token.byte_pos_start));
+            };
+        }
+
+        if let Some(node) = fn_node {
+            let AstNodeKind::FunctionDefinition(_, args, _) = &node.kind else {
+                panic!("Should be parsed correctly");
+            };
+
+            let token = &self.tokens[node.token_idx];
+            cur_scope_var_decls.push((Self::FN_CALL_RETURN_ADDR_VAR, token.byte_pos_start));
+
+            for arg in args {
+                add_decl_node!(arg);
+            }
+        }
+
+        // Add loop variable declarations
+        if let Some(loop_node) = loop_node {
+            let AstNodeKind::ForLoop(key, item, _, _) = &loop_node.kind else {
+                panic!("Should be parsed correctly");
+            };
+
+            let token = &self.tokens[loop_node.token_idx];
+            // These are always not named by the user.
+            cur_scope_var_decls.extend_from_slice(&[
+                (Self::FOR_ITERABLE_TEMP_VAR, token.byte_pos_start),
+                (Self::FOR_INDEX_TEMP_VAR, token.byte_pos_start),
+            ]);
+
+            // This is needed but allowed to be underscore by the user.
+            if let Some(key_node) = key {
+                add_decl_node!(key_node);
+            } else {
+                cur_scope_var_decls.push((Self::FOR_KEY_TEMP_VAR, token.byte_pos_start));
+            }
+
+            // This doesn't even need to be created if it's not set or underscore.
+            if let Some(item_node) = item {
+                add_decl_node!(item_node);
+            }
+        }
+
+        for node in nodes {
+            if matches!(&node.kind, AstNodeKind::DeclareAssign(_, _)) {
+                add_decl_node!(node);
             }
         }
 
         let frame_ptr = self.cur_stack_ptr_offset;
 
-        let add_sp = cur_scope_vars.len() as u32;
+        let add_sp = cur_scope_var_decls.len() as u32;
         if add_sp > 0 {
             self.push_instruction(Inst::AddStackPointer { value: add_sp }, node);
             self.cur_stack_ptr_offset += add_sp;
         }
-        self.scope_vars.push(cur_scope_vars);
-        BlockCtx::new(frame_ptr)
+        self.scope_var_decls.push(cur_scope_var_decls);
+
+        let mut ctx = prev_ctx.clone();
+        ctx.block_frame_ptr = frame_ptr;
+
+        if fn_node.is_some() {
+            ctx.fn_frame_ptr = frame_ptr;
+        }
+
+        if loop_node.is_some() {
+            ctx.loop_frame_ptr = frame_ptr;
+            ctx.loop_stack_ptr = self.cur_stack_ptr_offset;
+        }
+
+        ctx
     }
 
-    fn block_end(&mut self, node: &'a AstNode, ctx: BlockCtx) {
-        let sub_sp = self.cur_stack_ptr_offset - ctx.frame_ptr;
+    fn block_end(&mut self, node: &'a AstNode, ctx: &Context) {
+        let sub_sp = self.cur_stack_ptr_offset - ctx.block_frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
             self.cur_stack_ptr_offset -= sub_sp;
         }
-        self.scope_vars.pop();
+        self.scope_var_decls.pop();
     }
 
-    fn compile_block_full(
-        &mut self,
-        block: &'a AstNode,
-        loop_ctx: &mut LoopCtx,
-        fn_ctx: &mut FunctionCtx,
-    ) {
-        let mut ctx = self.block_start(block);
-        self.compile_block(block, &mut ctx, loop_ctx, fn_ctx);
-        self.block_end(block, ctx);
+    fn compile_block_full(&mut self, block: &'a AstNode, prev_ctx: &Context) {
+        let mut ctx = self.block_start(block, prev_ctx, None, None);
+        self.compile_block(block, &mut ctx);
+        self.block_end(block, &ctx);
     }
 
-    fn compile_block(
-        &mut self,
-        block: &'a AstNode,
-        ctx: &mut BlockCtx,
-        loop_ctx: &mut LoopCtx,
-        fn_ctx: &mut FunctionCtx,
-    ) {
-        let AstNodeKind::Block(b, _) = &block.kind else {
+    fn compile_block(&mut self, block: &'a AstNode, ctx: &mut Context) {
+        let AstNodeKind::Block(b) = &block.kind else {
             self.fatal("Expected block node", block);
         };
         for node in b.iter() {
             match &node.kind {
-                AstNodeKind::Assign(..) => self.compile_assignment(node, ctx),
-                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
-                AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node, ctx),
-                AstNodeKind::Return(..) => self.compile_return(node, ctx, fn_ctx),
-                AstNodeKind::ForLoop(..) => self.compile_for_loop(node, fn_ctx),
-                AstNodeKind::Continue => self.compile_continue(node, loop_ctx),
-                AstNodeKind::Break => self.compile_break(node, loop_ctx),
-                AstNodeKind::IfStatement(..) => {
-                    self.compile_if_statement(node, ctx, loop_ctx, fn_ctx)
+                AstNodeKind::DeclareAssign(..) | AstNodeKind::Assign(..) => {
+                    self.compile_assignment(node, ctx)
                 }
+                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node, ctx),
+                AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node, ctx),
+                AstNodeKind::Return(..) => self.compile_return(node, ctx),
+                AstNodeKind::ForLoop(..) => self.compile_for_loop(node, ctx),
+                AstNodeKind::Continue => self.compile_continue(node, ctx),
+                AstNodeKind::Break => self.compile_break(node, ctx),
+                AstNodeKind::IfStatement(..) => self.compile_if_statement(node, ctx),
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }
@@ -737,61 +790,22 @@ impl<'a> Compilation<'a> {
     }
 }
 
-struct BlockCtx {
-    frame_ptr: u32,
-    initialized_vars: u32,
-}
-
-impl BlockCtx {
-    fn new(frame_ptr: u32) -> Self {
-        BlockCtx {
-            frame_ptr,
-            initialized_vars: 0,
-        }
-    }
-}
-
-#[derive(Default)]
-struct LoopCtx {
-    frame_ptr: u32,
-    stack_ptr: u32,
-    breaks: Vec<u32>,
-    continues: Vec<u32>,
-}
-
-impl LoopCtx {
-    fn new(frame_ptr: u32, stack_ptr: u32) -> Self {
-        LoopCtx {
-            frame_ptr,
-            stack_ptr,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct FunctionCtx {
-    frame_ptr: u32,
-}
-
-impl FunctionCtx {
-    fn new(frame_ptr: u32) -> Self {
-        FunctionCtx { frame_ptr }
-    }
+#[derive(Clone, Debug, Default)]
+struct Context {
+    block_frame_ptr: u32,
+    fn_frame_ptr: u32,
+    loop_frame_ptr: u32,
+    loop_stack_ptr: u32,
+    loop_breaks: Vec<u32>,
+    loop_continues: Vec<u32>,
 }
 
 #[allow(dead_code)]
 pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
-    let mut ctx = c.block_start(block);
-    c.compile_block(
-        block,
-        &mut ctx,
-        &mut LoopCtx::default(),
-        &mut FunctionCtx::default(),
-    );
-    c.block_end(block, ctx);
+    let mut ctx = c.block_start(block, &Context::default(), None, None);
+    c.compile_block(block, &mut ctx);
+    c.block_end(block, &ctx);
     for (i, ins) in c.instructions.iter().enumerate() {
         trace!("{:4}: {:?}", i, ins);
     }

@@ -7,6 +7,7 @@ use crate::SOURCE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
+    DeclareAssign,
     Assign,
     Operator(Operator),
     LParen,
@@ -29,6 +30,7 @@ pub enum TokenKind {
 impl Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            TokenKind::DeclareAssign => write!(f, ":="),
             TokenKind::Assign => write!(f, "="),
             TokenKind::Operator(op) => write!(f, "{}", op.dbg_display()),
             TokenKind::LParen => write!(f, "("),
@@ -300,9 +302,9 @@ pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
         .unwrap_or(0)
 }
 
-pub fn report_source_pos(row: usize, char_col: usize) {
+pub fn report_source_pos(row: usize, char_col: usize, context: u32) {
     for (i, src_line) in SOURCE.get().unwrap().lines().enumerate() {
-        if (i as i64 - row as i64).abs() <= 2 {
+        if (i as i64 - row as i64).abs() <= context as i64 {
             eprintln!("{:4} | {}", i + 1, src_line);
         }
         if i == row {
@@ -323,7 +325,7 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
             let byte_col = iter.peek().map_or(0, |(i, _)| i - byte_row_start);
             let char_col = find_source_char_col(row, byte_col);
             eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
-            report_source_pos(row, byte_col);
+            report_source_pos(row, byte_col, 2);
             eprintln!("Tokenization failed");
             std::process::exit(1);
         };
@@ -377,7 +379,15 @@ pub fn tokenize(source: &'_ str) -> Vec<Token> {
                     iter.next();
                     tok!(2, TokenKind::Operator(Operator::Neq));
                 } else {
-                    panic!("Unexpected character: !");
+                    panic_with_pos!(format!("Unexpected character: {}", ch));
+                }
+            }
+            ':' => {
+                if iter.peek().is_some_and(|(_, c)| *c == '=') {
+                    iter.next();
+                    tok!(2, TokenKind::DeclareAssign);
+                } else {
+                    panic_with_pos!(format!("Unexpected character: {}", ch));
                 }
             }
             '=' => {

@@ -1,5 +1,7 @@
 use std::ops::DerefMut;
 
+use log::trace;
+
 use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
@@ -7,7 +9,7 @@ use crate::{
         ARG_REG_START, Addr, Compilation, Inst, RESERVED_REGS, STACK_SIZE, SUCCESS_FLAG_REG,
         add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op, mul_op, neq_op, sub_op,
     },
-    tokenizer::{MapValue, Token, Value},
+    tokenizer::{MapValue, Token, Value, find_source_char_col, report_source_pos},
 };
 
 #[allow(dead_code)]
@@ -103,7 +105,7 @@ impl<'a> Vm<'a> {
         }
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self, step_through: bool) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
                 // trace!(
@@ -277,15 +279,25 @@ impl<'a> Vm<'a> {
                     }
                 }
             }
-            // trace!(
-            //     "SP {}\n {}",
-            //     self.stack_ptr - self.sp_start,
-            //     self.memory[self.sp_start..self.stack_ptr + 1]
-            //         .iter()
-            //         .map(|v| v.dbg_display())
-            //         .collect::<Vec<_>>()
-            //         .join(", ")
-            // );
+            trace!(
+                "SP {}\n {}",
+                self.stack_ptr - self.sp_start,
+                self.memory[self.sp_start..self.stack_ptr + 1]
+                    .iter()
+                    .map(|v| v.dbg_display())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if step_through {
+                let inst = &self.instructions[self.inst_ptr];
+                trace!("Inst: {:?}", inst);
+                let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
+                let char_col = find_source_char_col(token.line, token.byte_col);
+                report_source_pos(token.line, char_col, 0);
+                print!("Press Enter to continue...");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+            }
             self.inst_ptr += 1;
         }
     }
