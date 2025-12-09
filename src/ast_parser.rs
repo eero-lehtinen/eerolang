@@ -2,8 +2,9 @@ use std::iter::Peekable;
 
 use log::trace;
 
-use crate::tokenizer::{
-    Operator, Token, TokenKind, Value, find_source_char_col, report_source_pos,
+use crate::{
+    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
+    value::Value,
 };
 
 type VarName = String;
@@ -301,7 +302,7 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                 kind: AstNodeKind::BinaryOp(
                     Box::new(AstNode {
                         token_idx,
-                        kind: AstNodeKind::Literal(Value::Integer(0)),
+                        kind: AstNodeKind::Literal(Value::default()),
                     }),
                     Operator::Sub,
                     Box::new(expr),

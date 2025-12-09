@@ -8,6 +8,9 @@ mod builtins;
 mod compiler;
 mod tokenizer;
 mod vm;
+mod value;
+
+
 
 static SOURCE: OnceLock<String> = OnceLock::new();
 #[derive(Parser)]

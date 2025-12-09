@@ -1,4 +1,4 @@
-use std::{fmt::Display, rc::Rc};
+use std::fmt::Display;
 
 use foldhash::{HashMap, HashMapExt};
 use log::trace;
@@ -6,7 +6,8 @@ use log::trace;
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
-    tokenizer::{Operator, Token, Value},
+    tokenizer::{Operator, Token},
+    value::{OpError, OpResult, Value},
 };
 
 /// This is very likely slow, it should just be a different instruction to use the stack.
@@ -411,8 +412,12 @@ impl<'a> Compilation<'a> {
 
                 // Constant folding for literals
                 if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
-                    let folded_value =
-                        binary_op(|err| self.fatal(err, expr), &lit_left, *op, &lit_right);
+                    let folded_value = match binary_op(&lit_left, *op, &lit_right) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            self.fatal(&binary_op_err(e, &lit_left, *op, &lit_right), expr);
+                        }
+                    };
                     return (self.make_literal(&folded_value), Some(folded_value));
                 }
 
@@ -695,7 +700,14 @@ impl<'a> Compilation<'a> {
         };
         let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, ctx);
 
-        let const_cond_true = cond_val.map(|v| !is_zero(|s| self.fatal(s, node), &v));
+        let const_cond_true = cond_val.map(|v| {
+            !is_zero(&v).unwrap_or_else(|| {
+                self.fatal(
+                    "Condition expression in if statement must be an integer",
+                    condition,
+                )
+            })
+        });
 
         if let Some(const_cond_true) = const_cond_true {
             if const_cond_true {
@@ -896,87 +908,81 @@ pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     c
 }
 
-pub fn binary_op_err(left_val: &Value, op: &str, right_val: &Value) -> String {
-    format!(
-        "Cannot apply operator '{}' to operands {} and {})",
-        op,
-        left_val.dbg_display(),
-        right_val.dbg_display()
-    )
+pub fn binary_op_err(err: OpError, left_val: &Value, op: Operator, right_val: &Value) -> String {
+    match err {
+        OpError::InvalidOperandTypes => format!(
+            "Cannot apply operator '{}' to operands {} and {})",
+            op.dbg_display(),
+            left_val.dbg_display(),
+            right_val.dbg_display()
+        ),
+        OpError::DivisionByZero => "Division by zero".to_string(),
+    }
 }
+
+// #[inline]
+// fn promoted(l: &OldValue, r: &OldValue) -> Option<(f64, f64)> {
+//     l.float_promoted().zip(r.float_promoted())
+// }
+//
+// macro_rules! impl_op {
+//     ($func_name:ident, $op:tt) => {
+//         #[inline]
+//         pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
+//             match (l, r) {
+//                 (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
+//                 (Value::Float(l), Value::Float(r)) => (l $op r).into(),
+//                 _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
+//                     err_fn(&binary_op_err(l, stringify!($op), r));
+//                     unreachable!()
+//                 }),
+//             }
+//         }
+//     };
+//     ($func_name:ident, $op:tt, $str_fn:expr) => {
+//         #[inline]
+//         pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
+//             match (l, r) {
+//                 (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
+//                 (Value::Float(l), Value::Float(r)) => (l $op r).into(),
+//                 (Value::String(l), Value::String(r)) => $str_fn(l, r).into(),
+//                 _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
+//                     err_fn(&binary_op_err(l, stringify!($op), r));
+//                     unreachable!()
+//                 }),
+//             }
+//         }
+//     };
+// }
+//
+// impl_op!(add_op, +, |l: &Rc<String>, r: &Rc<String>| l.as_ref().to_owned() + r.as_ref());
+// impl_op!(sub_op, -);
+// impl_op!(mul_op, *);
+// impl_op!(div_op, /);
+// impl_op!(lt_op, <);
+// impl_op!(gt_op, >);
+// impl_op!(lte_op, <=);
+// impl_op!(gte_op, >=);
+// impl_op!(eq_op, ==, |l, r| l == r);
+// impl_op!(neq_op, !=, |l, r| l != r);
 
 #[inline]
-fn promoted(l: &Value, r: &Value) -> Option<(f64, f64)> {
-    l.float_promoted().zip(r.float_promoted())
-}
-
-macro_rules! impl_op {
-    ($func_name:ident, $op:tt) => {
-        #[inline]
-        pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
-            match (l, r) {
-                (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
-                (Value::Float(l), Value::Float(r)) => (l $op r).into(),
-                _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
-                    err_fn(&binary_op_err(l, stringify!($op), r));
-                    unreachable!()
-                }),
-            }
-        }
-    };
-    ($func_name:ident, $op:tt, $str_fn:expr) => {
-        #[inline]
-        pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
-            match (l, r) {
-                (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
-                (Value::Float(l), Value::Float(r)) => (l $op r).into(),
-                (Value::String(l), Value::String(r)) => $str_fn(l, r).into(),
-                _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
-                    err_fn(&binary_op_err(l, stringify!($op), r));
-                    unreachable!()
-                }),
-            }
-        }
-    };
-}
-
-impl_op!(add_op, +, |l: &Rc<String>, r: &Rc<String>| l.as_ref().to_owned() + r.as_ref());
-impl_op!(sub_op, -);
-impl_op!(mul_op, *);
-impl_op!(div_op, /);
-impl_op!(lt_op, <);
-impl_op!(gt_op, >);
-impl_op!(lte_op, <=);
-impl_op!(gte_op, >=);
-impl_op!(eq_op, ==, |l, r| l == r);
-impl_op!(neq_op, !=, |l, r| l != r);
-
-#[inline]
-pub fn binary_op(err_fn: impl FnOnce(&str), l: &Value, op: Operator, r: &Value) -> Value {
+pub fn binary_op(l: &Value, op: Operator, r: &Value) -> OpResult {
     match op {
-        Operator::Add => add_op(err_fn, l, r),
-        Operator::Sub => sub_op(err_fn, l, r),
-        Operator::Mul => mul_op(err_fn, l, r),
-        Operator::Div => div_op(err_fn, l, r),
-        Operator::Lt => lt_op(err_fn, l, r),
-        Operator::Gt => gt_op(err_fn, l, r),
-        Operator::Lte => lte_op(err_fn, l, r),
-        Operator::Gte => gte_op(err_fn, l, r),
-        Operator::Eq => eq_op(err_fn, l, r),
-        Operator::Neq => neq_op(err_fn, l, r),
+        Operator::Add => l.add(r),
+        Operator::Sub => l.sub(r),
+        Operator::Mul => l.mul(r),
+        Operator::Div => l.div(r),
+        Operator::Lt => l.lt(r),
+        Operator::Gt => l.gt(r),
+        Operator::Lte => l.lte(r),
+        Operator::Gte => l.gte(r),
+        Operator::Eq => l.eq(r),
+        Operator::Neq => l.neq(r),
     }
 }
 
 #[inline]
-pub fn is_zero(err_fn: impl FnOnce(&str), cond_value: &Value) -> bool {
-    match cond_value {
-        Value::Integer(i) => *i == 0,
-        _ => {
-            err_fn(&format!(
-                "Expected (int) as condition, got {:?}",
-                cond_value.dbg_display()
-            ));
-            unreachable!()
-        }
-    }
+pub fn is_zero(cond_value: &Value) -> Option<bool> {
+    Some(cond_value.as_int()? == 0)
 }

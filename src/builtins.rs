@@ -1,15 +1,15 @@
-use std::{cell::RefCell, io::Write, rc::Rc};
+use std::io::{Stdout, Write};
 
 use foldhash::HashMap;
 
-use crate::tokenizer::{MapKey, MapValue, Range, Value, arg_display};
+use crate::value::{IntOrRc, Value, ValueInner, ValueRef, type_display};
 
 macro_rules! arg_bail {
     ($expected:expr, $args:expr) => {{
         return Err(format!(
             "Expects ({}), got {}",
             $expected,
-            arg_display($args)
+            type_display($args)
         ));
     }};
 }
@@ -25,55 +25,73 @@ macro_rules! out_of_bounds_bail {
 
 macro_rules! fn_ok {
     () => {
-        Ok(Value::Integer(1))
+        Ok(Value::int(1))
     };
 }
 
 pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
-    for (i, arg) in args.iter().enumerate() {
-        macro_rules! print_inner {
-            ($item:expr) => {
-                match $item {
-                    Value::Integer(ii) => write!(&mut w, "{}", ii).unwrap(),
-                    Value::Float(ff) => write!(&mut w, "{}", ff).unwrap(),
-                    Value::String(ss) => write!(&mut w, "\"{}\"", ss).unwrap(),
-                    Value::List(_) => write!(&mut w, "(list...)").unwrap(),
-                    Value::Map(_) => write!(&mut w, "(map...)").unwrap(),
-                    Value::Range(r) => write!(&mut w, "(range {}-{})", r.start, r.end).unwrap(),
-                }
-            };
-        }
 
-        match arg {
-            Value::Integer(i) => write!(&mut w, "{}", i).unwrap(),
-            Value::Float(f) => write!(&mut w, "{}", f).unwrap(),
-            Value::String(s) => write!(&mut w, "{}", s).unwrap(),
-            Value::Range(r) => {
-                write!(&mut w, "{}-{}", r.start, r.end).unwrap();
+    let print_inner = |item: &Value, w: &mut Stdout| match item.as_int_or_rc() {
+        IntOrRc::Int(ii) => {
+            write!(w, "{}", ii).unwrap();
+        }
+        IntOrRc::Rc(rc_item) => match rc_item {
+            ValueInner::Float(ff) => {
+                write!(w, "{}", ff).unwrap();
             }
-            Value::List(l) => {
-                write!(&mut w, "[").unwrap();
-                for (j, item) in l.borrow().iter().enumerate() {
-                    print_inner!(item);
-                    if j < l.borrow().len() - 1 {
-                        print!(", ");
+            ValueInner::Range(r_start, r_end) => {
+                write!(w, "{}-{}", r_start, r_end).unwrap();
+            }
+            ValueInner::String(ss) => {
+                write!(w, "{}", ss).unwrap();
+            }
+            ValueInner::List(_) => {
+                write!(w, "<nested list>").unwrap();
+            }
+            ValueInner::Map(_) => {
+                write!(w, "<nested map>").unwrap();
+            }
+        },
+    };
+
+    for (i, arg) in args.iter().enumerate() {
+        match arg.as_int_or_rc() {
+            IntOrRc::Int(int) => {
+                write!(&mut w, "{}", int).unwrap();
+            }
+            IntOrRc::Rc(rc) => match rc {
+                ValueInner::Float(f) => {
+                    write!(&mut w, "{}", f).unwrap();
+                }
+                ValueInner::Range(r_start, r_end) => {
+                    write!(&mut w, "{}-{}", r_start, r_end).unwrap();
+                }
+                ValueInner::String(s) => {
+                    write!(&mut w, "{}", s).unwrap();
+                }
+                ValueInner::List(l) => {
+                    write!(&mut w, "[").unwrap();
+                    for (j, item) in l.borrow().iter().enumerate() {
+                        print_inner(item, &mut w);
+                        if j < l.borrow().len() - 1 {
+                            write!(&mut w, ", ").unwrap();
+                        }
                     }
                 }
-                write!(&mut w, "]").unwrap();
-            }
-            Value::Map(m) => {
-                write!(&mut w, "{{").unwrap();
-                let map_ref = m.borrow();
-                for (j, (key, value)) in map_ref.inner.iter().enumerate() {
-                    write!(&mut w, "{}: ", key.dbg_display()).unwrap();
-                    print_inner!(value);
-                    if j < map_ref.inner.len() - 1 {
-                        write!(&mut w, ", ").unwrap();
+                ValueInner::Map(m) => {
+                    write!(&mut w, "{{").unwrap();
+                    let map = &m.borrow().inner;
+                    for (j, (key, value)) in map.iter().enumerate() {
+                        write!(&mut w, "{}: ", key).unwrap();
+                        print_inner(value, &mut w);
+                        if j < map.len() - 1 {
+                            write!(&mut w, ", ").unwrap();
+                        }
                     }
+                    write!(&mut w, "}}").unwrap();
                 }
-                write!(&mut w, "}}").unwrap();
-            }
+            },
         }
         if i < args.len() - 1 {
             write!(&mut w, " ").unwrap();
@@ -90,8 +108,8 @@ pub fn builtin_sleep(args: &[Value]) -> ProgramFnRes {
         arg_bail!("int", args);
     };
 
-    let duration_ms = match arg {
-        Value::Integer(i) => *i,
+    let duration_ms = match arg.as_int() {
+        Some(i) => i,
         _ => arg_bail!("int", args),
     };
 
@@ -101,28 +119,37 @@ pub fn builtin_sleep(args: &[Value]) -> ProgramFnRes {
 
 const READFILE_ARGS: u32 = 1;
 pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
-    let [Value::String(filename)] = &args else {
+    let [filename] = &args else {
         arg_bail!("string", args);
     };
 
-    let content = std::fs::read_to_string(filename.as_ref())
+    let ValueRef::String(filename) = filename.as_value_ref() else {
+        arg_bail!("string", args);
+    };
+
+    let content = std::fs::read_to_string(filename)
         .map_err(|_| format!("Failed to read file: {}", filename))?;
 
-    Ok(Value::String(content.trim().to_owned().into()))
+    Ok(Value::string(content.trim().into()))
 }
 
 const SPLIT_ARGS: u32 = 2;
 pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
-    let [Value::String(s), Value::String(delim)] = &args else {
+    let [s, delim] = &args else {
+        arg_bail!("string, string", args);
+    };
+
+    let (ValueRef::String(s), ValueRef::String(delim)) = (s.as_value_ref(), delim.as_value_ref())
+    else {
         arg_bail!("string, string", args);
     };
 
     let parts: Vec<Value> = s
-        .split(delim.as_ref())
-        .map(|part| Value::String(Rc::from(part.to_owned())))
+        .split(delim)
+        .map(|part| Value::string(part.to_owned()))
         .collect();
 
-    Ok(Value::List(Rc::new(RefCell::new(parts))))
+    Ok(Value::list(parts))
 }
 
 const INT_ARGS: u32 = 1;
@@ -131,16 +158,16 @@ pub fn builtin_int(args: &[Value]) -> ProgramFnRes {
         arg_bail!("string/float/int", args);
     };
 
-    match arg {
-        Value::String(s) => {
+    match arg.as_value_ref() {
+        ValueRef::String(s) => {
             let int_value = s
                 .parse::<i64>()
-                .map_err(|_| format!("Failed to parse integer from string: {}", s))?;
-            Ok(Value::Integer(int_value))
+                .map_err(|_| format!("Failed to parse int from string: {}", s))?;
+            Ok(Value::int(int_value))
         }
-        Value::Float(f) => Ok(Value::Integer(*f as i64)),
-        Value::Integer(i) => Ok(Value::Integer(*i)),
-        _ => arg_bail!("string/float", args),
+        ValueRef::Smi(i) => Ok(Value::smi(i)),
+        ValueRef::Float(f) => Ok(Value::int(f as i64)),
+        _ => arg_bail!("string/float/int", args),
     }
 }
 
@@ -150,25 +177,25 @@ pub fn builtin_float(args: &[Value]) -> ProgramFnRes {
         arg_bail!("string/int", args);
     };
 
-    match arg {
-        Value::String(s) => {
-            let float_value = s
+    match arg.as_value_ref() {
+        ValueRef::String(s) => {
+            let val = s
                 .parse::<f64>()
                 .map_err(|_| format!("Failed to parse float from string: {}", s))?;
-            Ok(Value::Float(float_value))
+            Ok(Value::float(val))
         }
-        Value::Integer(i) => Ok(Value::Float(*i as f64)),
-        Value::Float(f) => Ok(Value::Float(*f)),
-        _ => arg_bail!("string/int", args),
+        ValueRef::Smi(i) => Ok(Value::float(i as f64)),
+        ValueRef::Float(f) => Ok(Value::float(f)),
+        _ => arg_bail!("string/float/int", args),
     }
 }
 
 fn write_str(w: &mut impl Write, value: &Value) {
-    match value {
-        Value::Integer(i) => write!(w, "{}", i).unwrap(),
-        Value::Float(f) => write!(w, "{}", f).unwrap(),
-        Value::String(s) => write!(w, "{}", s).unwrap(),
-        Value::List(elems) => {
+    match value.as_value_ref() {
+        ValueRef::Smi(i) => write!(w, "{}", i).unwrap(),
+        ValueRef::Float(f) => write!(w, "{}", f).unwrap(),
+        ValueRef::String(s) => write!(w, "{}", s).unwrap(),
+        ValueRef::List(elems) => {
             for (i, v) in elems.borrow().iter().enumerate() {
                 if i > 0 {
                     write!(w, ",").unwrap();
@@ -176,7 +203,7 @@ fn write_str(w: &mut impl Write, value: &Value) {
                 write_str(w, v);
             }
         }
-        Value::Map(map) => {
+        ValueRef::Map(map) => {
             let map_ref = map.borrow();
             let mut first = true;
             for (key, value) in map_ref.inner.iter() {
@@ -189,7 +216,7 @@ fn write_str(w: &mut impl Write, value: &Value) {
                 write_str(w, value);
             }
         }
-        Value::Range(r) => write!(w, "{}-{}", r.start, r.end).unwrap(),
+        ValueRef::Range(s, e) => write!(w, "{}-{}", s, e).unwrap(),
     }
 }
 
@@ -201,26 +228,27 @@ pub fn builtin_string(args: &[Value]) -> ProgramFnRes {
     let mut w = Vec::new();
     write_str(&mut w, arg);
 
-    let s = String::from_utf8(w).unwrap();
+    // SAFETY: I'm only writing valid UTF-8 data to the vector.
+    let s = unsafe { String::from_utf8(w).unwrap_unchecked() };
 
-    Ok(Value::String(Rc::from(s)))
+    Ok(Value::string(s))
 }
 
 pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     if args.len() < 2 || args.len() > 3 {
         arg_bail!("string, int, opt int", args);
     }
-    let string = match &args[0] {
-        Value::String(s) => s,
+    let string = match args[0].as_value_ref() {
+        ValueRef::String(s) => s,
         _ => arg_bail!("string, int, opt int", args),
     };
-    let start = match &args[1] {
-        Value::Integer(i) => *i,
+    let start = match args[1].as_int() {
+        Some(i) => i,
         _ => arg_bail!("string, int, opt int", args),
     };
     let mut end = if args.get(2).is_some() {
-        match &args[2] {
-            Value::Integer(i) => *i,
+        match args[2].as_int() {
+            Some(i) => i,
             _ => arg_bail!("string, int, opt int", args),
         }
     } else {
@@ -239,35 +267,32 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     end = end.min(string.len() as i64);
 
     let substring = &string[start as usize..end as usize];
-    Ok(Value::String(Rc::from(substring.to_owned())))
+    Ok(Value::string(substring.to_owned()))
 }
 
 pub fn builtin_list(args: &[Value]) -> ProgramFnRes {
     let list = args.to_vec();
-    Ok(Value::List(Rc::new(RefCell::new(list))))
+    Ok(Value::list(list))
 }
 
 pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
     let values = args
         .iter()
         .map(|arg| {
-            let Value::List(pair) = arg else {
-                arg_bail!("all arguments to be pairs [string/int key, value]", args);
+            let ValueRef::List(pair) = arg.as_value_ref() else {
+                arg_bail!("all arguments to be pairs [string key, value]", args);
             };
             let [key, value] = &pair.borrow()[..] else {
-                arg_bail!("all arguments to be pairs [string/int key, value]", args);
+                arg_bail!("all arguments to be pairs [string key, value]", args);
             };
-            let Some(key) = MapKey::try_from(key).ok() else {
-                arg_bail!("all arguments to be pairs [string/int key, value]", args);
+            if !key.is_string() {
+                arg_bail!("all arguments to be pairs [string key, value]", args);
             };
-            Ok((key, value.clone()))
+            Ok((key.clone(), value.clone()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let map = HashMap::from_iter(values);
-    Ok(Value::Map(Rc::new(RefCell::new(MapValue {
-        inner: map,
-        iteration_keys: Rc::new(RefCell::new(Vec::new())),
-    }))))
+    Ok(Value::map(map))
 }
 
 const PUSH_ARGS: u32 = 2;
@@ -277,8 +302,8 @@ pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
         arg_bail!("list, value", args);
     };
 
-    match target {
-        Value::List(l) => {
+    match target.as_value_ref() {
+        ValueRef::List(l) => {
             l.borrow_mut().push(value.clone());
             fn_ok!()
         }
@@ -292,11 +317,11 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
         arg_bail!("list/map, int/string if map, value", args);
     };
 
-    match target {
-        Value::List(l) => {
-            let index = match &index_or_key {
-                Value::Integer(i) => *i as usize,
-                _ => arg_bail!("list, int, value", args),
+    match target.as_value_ref() {
+        ValueRef::List(l) => {
+            let index = match index_or_key.as_int() {
+                Some(i) => i as usize,
+                None => arg_bail!("list, int, value", args),
             };
             if index >= l.borrow().len() {
                 out_of_bounds_bail!(l.borrow().len(), index);
@@ -304,13 +329,13 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
             l.borrow_mut()[index] = value.clone();
             fn_ok!()
         }
-        Value::Map(m) => {
-            let Ok(key) = MapKey::try_from(index_or_key) else {
-                arg_bail!("map, int/string, value", args);
+        ValueRef::Map(m) => {
+            if !index_or_key.is_string() {
+                arg_bail!("map, string, value", args);
             };
             let mut mb = m.borrow_mut();
-            mb.inner.insert(key, value.clone());
-            mb.iteration_keys.borrow_mut().clear();
+            mb.inner.insert(index_or_key.clone(), value.clone());
+            mb.iter_keys.clear();
             fn_ok!()
         }
         _ => arg_bail!("list/map, int if list/string if map, value", args),
@@ -321,43 +346,61 @@ const GET_ARGS: u32 = 2;
 #[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     let [target, index_or_key] = args else {
-        arg_bail!("list/map/string, int/string if map", args);
+        arg_bail!("list/string/range/map, int", args);
     };
 
-    match target {
-        Value::List(l) => {
-            let index = match index_or_key {
-                Value::Integer(i) => *i as usize,
-                _ => arg_bail!("list, int", args),
+    match target.as_value_ref() {
+        ValueRef::Range(start, end) => {
+            let Some(index) = index_or_key.as_int() else {
+                arg_bail!("list/string/range, int", args);
             };
-            if index >= l.borrow().len() {
-                out_of_bounds_bail!(l.borrow().len(), index);
+
+            if index >= end - start {
+                out_of_bounds_bail!(end - start, index);
             }
-            Ok(l.borrow()[index].clone())
+            Ok(Value::int(start + index))
         }
-        Value::Map(m) => {
-            let Ok(key) = MapKey::try_from(index_or_key) else {
-                arg_bail!("map, int/string", args);
+        ValueRef::String(s) => {
+            let Some(index) = index_or_key.as_int() else {
+                arg_bail!("list/string/range, int", args);
             };
-            match m.borrow().inner.get(&key) {
-                Some(v) => Ok(v.clone()),
-                None => Err(format!("Key not found in map: {}", key.dbg_display())),
-            }
-        }
-        Value::String(s) => {
-            let index = match index_or_key {
-                Value::Integer(i) => *i as usize,
-                _ => arg_bail!("string, int", args),
-            };
+
+            let index = index as usize;
+
             if index >= s.len() {
                 out_of_bounds_bail!(s.len(), index);
             }
-            Ok(Value::String(Rc::from(
-                s.chars().nth(index).unwrap().to_string(),
-            )))
+            Ok(Value::string(s.chars().nth(index).unwrap().to_string()))
         }
+        ValueRef::List(l) => {
+            let Some(index) = index_or_key.as_int() else {
+                arg_bail!("list/string/range, int", args);
+            };
 
-        _ => arg_bail!("list/string/map, int/string if map", args),
+            let index = index as usize;
+
+            let l = l.borrow();
+
+            if index >= l.len() {
+                out_of_bounds_bail!(l.len(), index);
+            }
+            Ok(l[index].clone())
+        }
+        ValueRef::Map(m) => {
+            if !index_or_key.is_string() {
+                arg_bail!("map, string", args);
+            };
+
+            let m = &m.borrow().inner;
+
+            match m.get(index_or_key) {
+                Some(v) => Ok(v.clone()),
+                None => Err(format!("Key not found in map: {}", index_or_key)),
+            }
+        }
+        _ => {
+            arg_bail!("list/map/string, int/string if map", args);
+        }
     }
 }
 
@@ -367,13 +410,13 @@ pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
         arg_bail!("map, string", args);
     };
 
-    match target {
-        Value::Map(m) => {
-            let Ok(key_str) = MapKey::try_from(key) else {
+    match target.as_value_ref() {
+        ValueRef::Map(m) => {
+            if !key.is_string() {
                 arg_bail!("map, string", args);
             };
-            let has_key = m.borrow().inner.contains_key(&key_str);
-            Ok(Value::Integer(has_key as i64))
+            let has_key = m.borrow().inner.contains_key(key);
+            Ok(Value::bool(has_key))
         }
         _ => arg_bail!("map, string", args),
     }
@@ -385,14 +428,14 @@ pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
         arg_bail!("list/string/map", args);
     };
 
-    let len = match &len {
-        Value::String(s) => s.len() as i64,
-        Value::List(l) => l.borrow().len() as i64,
-        Value::Map(m) => m.borrow().inner.len() as i64,
+    let len = match len.as_value_ref() {
+        ValueRef::String(s) => s.len() as i64,
+        ValueRef::List(l) => l.borrow().len() as i64,
+        ValueRef::Map(m) => m.borrow().inner.len() as i64,
         _ => arg_bail!("list/string/map", args),
     };
 
-    Ok(Value::Integer(len))
+    Ok(Value::int(len))
 }
 
 const MOD_ARGS: u32 = 2;
@@ -401,17 +444,19 @@ pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
         arg_bail!("int, int", args);
     };
 
-    let a = match a {
-        Value::Integer(i) => *i,
-        _ => arg_bail!("int, int", args),
+    let Some(a) = a.as_int() else {
+        arg_bail!("int, int", args);
     };
 
-    let b = match b {
-        Value::Integer(i) => *i,
-        _ => arg_bail!("int, int", args),
+    let Some(b) = b.as_int() else {
+        arg_bail!("int, int", args);
     };
 
-    Ok(Value::Integer(a % b))
+    if b == 0 {
+        return Err("Division by zero in mod operation".to_string());
+    }
+
+    Ok(Value::int(a % b))
 }
 
 pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
@@ -419,22 +464,25 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
         arg_bail!("int, opt int", args);
     };
 
-    let mut start = match &args[0] {
-        Value::Integer(i) => *i,
-        _ => arg_bail!("int, opt int", args),
+    let start = &args[0];
+
+    let Some(mut start) = start.as_int() else {
+        arg_bail!("int, opt int", args);
     };
 
-    let end = match args.get(1) {
-        Some(Value::Integer(i)) => *i,
-        None => {
-            let tmp = start;
-            start = 0;
-            tmp
-        }
-        _ => arg_bail!("int, opt int", args),
+    let end = if args.len() == 2 {
+        let end_arg = &args[1];
+        let Some(end) = end_arg.as_int() else {
+            arg_bail!("int, opt int", args);
+        };
+        end
+    } else {
+        let tmp = start;
+        start = 0;
+        tmp
     };
 
-    Ok(Value::Range(Box::new(Range { start, end })))
+    Ok(Value::range(start, end))
 }
 
 pub type ProgramFnRes = Result<Value, String>;

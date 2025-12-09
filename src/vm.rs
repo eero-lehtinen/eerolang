@@ -7,10 +7,10 @@ use crate::{
     builtins::{ProgramFn, builtin_get},
     compiler::{
         ARG_REG_START, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, OpCode, RESERVED_REGS,
-        RESULT_REG1, STACK_SIZE, SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero,
-        lt_op, lte_op, mul_op, neq_op, sub_op,
+        RESULT_REG1, STACK_SIZE, SUCCESS_FLAG_REG, binary_op_err, is_zero,
     },
-    tokenizer::{MapValue, Operator, Token, Value, find_source_char_col, report_source_pos},
+    tokenizer::{Operator, Token, find_source_char_col, report_source_pos},
+    value::{Map, Value, ValueRef},
 };
 
 #[allow(dead_code)]
@@ -33,7 +33,7 @@ fn placeholder_func(_: &[Value]) -> Result<Value, String> {
 impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
         let mut memory = vec![
-            Value::Integer(0);
+            Value::default();
             RESERVED_REGS as usize + ctx.literals.len() + STACK_SIZE as usize
         ];
         for (lit_value, lit_reg) in ctx.literals.iter() {
@@ -114,7 +114,19 @@ impl<'a> Vm<'a> {
                 let src2 = Addr::from_raw($data.src2);
                 let l = self.mem_get(src1);
                 let r = self.mem_get(src2);
-                let res = $fn(|s| self.fatal(s), l, r);
+                if $op == Operator::Div {
+                    if let Some(r_int) = r.as_int() {
+                        if r_int == 0 {
+                            self.fatal("Division by zero");
+                        }
+                    }
+                }
+                let res = match l.$fn(r) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.fatal(&binary_op_err(e, l, $op, r));
+                    }
+                };
                 trace!(
                     "Binary op {} (at {}) {} {} (at {}) = {} (at {})",
                     l.dbg_display(),
@@ -149,7 +161,7 @@ impl<'a> Vm<'a> {
                     let dst = Addr::from_raw(args.dst);
                     let value = i32::from_ne_bytes(args.src1.to_ne_bytes());
                     trace!("Load int {} to {}", value, dst);
-                    self.mem_set(dst, value.into());
+                    self.mem_set(dst, Value::smi(value));
                 }
                 OpCode::InitMapIter => {
                     let dst = Addr::from_raw(args.dst);
@@ -175,16 +187,16 @@ impl<'a> Vm<'a> {
                     let value = args.dst;
                     self.sub_stack(value);
                 }
-                OpCode::Add => bop!(add_op, args, Operator::Add),
-                OpCode::Sub => bop!(sub_op, args, Operator::Sub),
-                OpCode::Mul => bop!(mul_op, args, Operator::Mul),
-                OpCode::Div => bop!(div_op, args, Operator::Div),
-                OpCode::Lt => bop!(lt_op, args, Operator::Lt),
-                OpCode::Lte => bop!(lte_op, args, Operator::Lte),
-                OpCode::Gt => bop!(gt_op, args, Operator::Gt),
-                OpCode::Gte => bop!(gte_op, args, Operator::Gte),
-                OpCode::Eq => bop!(eq_op, args, Operator::Eq),
-                OpCode::Neq => bop!(neq_op, args, Operator::Neq),
+                OpCode::Add => bop!(add, args, Operator::Add),
+                OpCode::Sub => bop!(sub, args, Operator::Sub),
+                OpCode::Mul => bop!(mul, args, Operator::Mul),
+                OpCode::Div => bop!(div, args, Operator::Div),
+                OpCode::Lt => bop!(lt, args, Operator::Lt),
+                OpCode::Lte => bop!(lte, args, Operator::Lte),
+                OpCode::Gt => bop!(gt, args, Operator::Gt),
+                OpCode::Gte => bop!(gte, args, Operator::Gte),
+                OpCode::Eq => bop!(eq, args, Operator::Eq),
+                OpCode::Neq => bop!(neq, args, Operator::Neq),
                 OpCode::CallBuiltin => {
                     let dst = Addr::from_raw(args.dst);
                     let func = args.src1;
@@ -203,18 +215,17 @@ impl<'a> Vm<'a> {
                 OpCode::JumpAddr => {
                     let target = Addr::from_raw(args.dst);
                     let target_value = self.mem_get(target);
-                    let target_ip = match target_value {
-                        Value::Integer(i) => *i as usize,
-                        v => self.fatal(&format!(
+                    let Some(target_ip) = target_value.as_int() else {
+                        self.fatal(&format!(
                             "Expected (int) as jump address, got {:?}",
-                            v.dbg_display()
-                        )),
+                            target_value.dbg_display()
+                        ));
                     };
                     trace!(
                         "Jump from {} to {} (at {})",
                         self.inst_ptr, target_ip, target
                     );
-                    self.inst_ptr = target_ip;
+                    self.inst_ptr = target_ip as usize;
                 }
                 OpCode::JumpIfZero => {
                     let target = args.dst;
@@ -227,7 +238,15 @@ impl<'a> Vm<'a> {
                         cond
                     );
                     let cond_value = &self.mem_get(cond);
-                    let is_zero = is_zero(|s| self.fatal(s), cond_value);
+                    let is_zero = match is_zero(cond_value) {
+                        Some(v) => v,
+                        None => {
+                            self.fatal(&format!(
+                                "Expected (int) as condition, got {}",
+                                cond_value.dbg_display(),
+                            ));
+                        }
+                    };
                     if is_zero {
                         self.inst_ptr = target as usize;
                     }
@@ -250,13 +269,11 @@ impl<'a> Vm<'a> {
             self.mem_get(dst).dbg_display(),
             dst
         );
-        match self.mem_get(dst) {
-            Value::Integer(i) => {
-                self.mem_set(dst, Value::Integer(i + 1));
-            }
-            v => {
-                self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
-            }
+        let v = self.mem_get(dst);
+        if let Some(i) = v.as_int() {
+            self.mem_set(dst, Value::int(i + 1));
+        } else {
+            self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
         }
     }
 
@@ -330,22 +347,16 @@ impl<'a> Vm<'a> {
             dst
         );
         // Other types get ignored
-        let map = self.mem_get(dst);
-        if let Value::Map(map) = map {
-            let mut map_borrow = map.borrow_mut();
-            let MapValue {
-                inner,
-                iteration_keys,
-            } = map_borrow.deref_mut();
-
-            let mut iteration_keys_borrow = iteration_keys.borrow_mut();
-
-            if iteration_keys_borrow.is_empty() {
+        let value = self.mem_get(dst);
+        if let ValueRef::Map(map) = value.as_value_ref() {
+            let mut map = map.borrow_mut();
+            let Map { inner, iter_keys } = map.deref_mut();
+            if iter_keys.is_empty() {
                 for key in inner.keys() {
-                    iteration_keys_borrow.push(Value::from(key));
+                    iter_keys.push(key.clone());
                 }
             }
-        };
+        }
     }
 
     fn load_item(&mut self, dst: Addr, src: Addr, key: Addr) {
@@ -359,13 +370,12 @@ impl<'a> Vm<'a> {
         );
         let iterable = self.mem_get(src);
         let key = self.mem_get(key);
-        if let Value::Range(_) = iterable {
-            self.mem_set(dst, key.clone());
-        } else {
-            self.mem_set(
-                dst,
-                builtin_get(&[iterable.clone(), key.clone()]).expect("builtin_get failed"),
-            );
+        match builtin_get(&[iterable.clone(), key.clone()]) {
+            Ok(value) => {
+                trace!("  -> loaded value: {:?}", value.dbg_display());
+                self.mem_set(dst, value);
+            }
+            Err(e) => self.fatal(&format!("Wrong value in for loop iterable: {}", e)),
         }
     }
 
@@ -380,45 +390,47 @@ impl<'a> Vm<'a> {
         );
         let iterable = self.mem_get(src);
         let index = self.mem_get(index);
-        let index = match index {
-            Value::Integer(i) => *i,
-            v => self.fatal(&format!(
+        let Some(index) = index.as_int() else {
+            self.fatal(&format!(
                 "Expected (int) as index, got {:?}",
-                v.dbg_display()
-            )),
+                index.dbg_display()
+            ));
         };
 
-        let key: Option<Value> = match iterable {
-            Value::List(l) => {
-                let list = l.borrow();
-                if index < 0 || index >= list.len() as i64 {
-                    None
-                } else {
-                    Some((index as i64).into())
-                }
-            }
-            Value::Range(r) => {
-                if index < 0 || index >= (r.end - r.start) {
-                    None
-                } else {
-                    Some((r.start + index).into())
-                }
-            }
-            Value::Map(map) => {
-                let map_borrow = map.borrow();
-                let list = map_borrow.iteration_keys.borrow();
+        let key = match iterable.as_value_ref() {
+            ValueRef::List(list_rc) => {
+                let list = list_rc.borrow();
                 if index < 0 || index >= list.len() as i64 {
                     None
                 } else {
                     Some(list[index as usize].clone())
                 }
             }
-            v => self.fatal(&format!(
+            ValueRef::Range(start, end) => {
+                if index < 0 || index >= (end - start) {
+                    None
+                } else {
+                    Some(Value::int(start + index))
+                }
+            }
+            ValueRef::Map(map_rc) => {
+                let map = map_rc.borrow();
+                if index < 0 || index >= map.iter_keys.len() as i64 {
+                    None
+                } else {
+                    Some(map.iter_keys[index as usize].clone())
+                }
+            }
+            _ => self.fatal(&format!(
                 "Expected (list/range/map) as iterable, got {:?}",
-                v.dbg_display()
+                iterable.dbg_display()
             )),
         };
-        self.mem_set(SUCCESS_FLAG_REG, (key.is_some() as i64).into());
+
+        self.mem_set(
+            SUCCESS_FLAG_REG,
+            Value::smi(if key.is_some() { 1 } else { 0 }),
+        );
         if let Some(key) = key {
             self.mem_set(dst, key);
         }
