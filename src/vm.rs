@@ -6,9 +6,9 @@ use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
     compiler::{
-        ARG_REG_START, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, RESERVED_REGS, RESULT_REG1,
-        STACK_SIZE, SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero, lt_op, lte_op,
-        mul_op, neq_op, sub_op,
+        ARG_REG_START, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, OpCode, RESERVED_REGS,
+        RESULT_REG1, STACK_SIZE, SUCCESS_FLAG_REG, add_op, div_op, eq_op, gt_op, gte_op, is_zero,
+        lt_op, lte_op, mul_op, neq_op, sub_op,
     },
     tokenizer::{MapValue, Operator, Token, Value, find_source_char_col, report_source_pos},
 };
@@ -109,22 +109,26 @@ impl<'a> Vm<'a> {
     pub fn run(&mut self, step_through: bool) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
-                let l = self.mem_get($data.src1);
-                let r = self.mem_get($data.src2);
+                let dst = Addr::from_raw($data.dst);
+                let src1 = Addr::from_raw($data.src1);
+                let src2 = Addr::from_raw($data.src2);
+                let l = self.mem_get(src1);
+                let r = self.mem_get(src2);
                 let res = $fn(|s| self.fatal(s), l, r);
                 trace!(
                     "Binary op {} (at {}) {} {} (at {}) = {} (at {})",
                     l.dbg_display(),
-                    $data.src1,
+                    src1,
                     $op.dbg_display(),
                     r.dbg_display(),
-                    $data.src2,
+                    src2,
                     res.dbg_display(),
-                    $data.dst
+                    dst
                 );
-                self.mem_set($data.dst, res);
+                self.mem_set(dst, res);
             }};
         }
+
         while self.inst_ptr < self.instructions.len() {
             // trace!(
             //     "IP {}: {:?}",
@@ -132,12 +136,16 @@ impl<'a> Vm<'a> {
             // );
             //
             let inst_ptr = self.inst_ptr;
+            let inst = &self.instructions[inst_ptr];
+            let Inst { opcode, args } = inst;
 
-            match &self.instructions[inst_ptr] {
-                &Inst::Nop => {
+            match *opcode {
+                OpCode::Nop => {
                     trace!("Nop");
                 }
-                &Inst::LoadAddr { dst, src } => {
+                OpCode::LoadAddr => {
+                    let dst = Addr::from_raw(args.dst);
+                    let src = Addr::from_raw(args.src1);
                     trace!(
                         "Load value {} from {} to {}",
                         self.mem_get(src).dbg_display(),
@@ -146,11 +154,41 @@ impl<'a> Vm<'a> {
                     );
                     self.mem_set(dst, self.mem_get(src).clone());
                 }
-                &Inst::LoadInt { dst, value } => {
+                OpCode::LoadInt => {
+                    let dst = Addr::from_raw(args.dst);
+                    let value = i32::from_ne_bytes(args.src1.to_ne_bytes());
                     trace!("Load int {} to {}", value, dst);
                     self.mem_set(dst, value.into());
                 }
-                &Inst::LoadIterationKey { dst, src, index } => {
+                OpCode::InitMapIterationList => {
+                    let dst = Addr::from_raw(args.dst);
+                    trace!(
+                        "Init map iteration list for {} (at {})",
+                        self.mem_get(dst).dbg_display(),
+                        dst
+                    );
+                    // Other types get ignored
+                    let map = self.mem_get(dst);
+                    if let Value::Map(map) = map {
+                        let mut map_borrow = map.borrow_mut();
+                        let MapValue {
+                            inner,
+                            iteration_keys,
+                        } = map_borrow.deref_mut();
+
+                        let mut iteration_keys_borrow = iteration_keys.borrow_mut();
+
+                        if iteration_keys_borrow.is_empty() {
+                            for key in inner.keys() {
+                                iteration_keys_borrow.push(Value::from(key));
+                            }
+                        }
+                    };
+                }
+                OpCode::LoadIterationKey => {
+                    let dst = Addr::from_raw(args.dst);
+                    let src = Addr::from_raw(args.src1);
+                    let index = Addr::from_raw(args.src2);
                     trace!(
                         "Load iteration key at index {} (at {}) of {} (at {}) to {}",
                         self.mem_get(index).dbg_display(),
@@ -209,7 +247,10 @@ impl<'a> Vm<'a> {
                         self.mem_get(SUCCESS_FLAG_REG).dbg_display()
                     );
                 }
-                &Inst::LoadCollectionItem { dst, src, key } => {
+                OpCode::LoadCollectionItem => {
+                    let dst = Addr::from_raw(args.dst);
+                    let src = Addr::from_raw(args.src1);
+                    let key = Addr::from_raw(args.src2);
                     trace!(
                         "Load collection item with key {} (at {}) from {} (at {}) to {}",
                         self.mem_get(key).dbg_display(),
@@ -231,31 +272,8 @@ impl<'a> Vm<'a> {
                         );
                     }
                 }
-                &Inst::InitMapIterationList { dst: src } => {
-                    trace!(
-                        "Init map iteration list for {} (at {})",
-                        self.mem_get(src).dbg_display(),
-                        src
-                    );
-                    // Other types get ignored
-                    let map = self.mem_get(src);
-                    if let Value::Map(map) = map {
-                        let mut map_borrow = map.borrow_mut();
-                        let MapValue {
-                            inner,
-                            iteration_keys,
-                        } = map_borrow.deref_mut();
-
-                        let mut iteration_keys_borrow = iteration_keys.borrow_mut();
-
-                        if iteration_keys_borrow.is_empty() {
-                            for key in inner.keys() {
-                                iteration_keys_borrow.push(Value::from(key));
-                            }
-                        }
-                    };
-                }
-                &Inst::AddStackPointer { value } => {
+                OpCode::AddStackPointer => {
+                    let value = args.dst;
                     trace!("Add {} to stack pointer", value);
                     self.stack_ptr += value as usize;
                     if self.stack_ptr >= self.memory.len() {
@@ -263,26 +281,26 @@ impl<'a> Vm<'a> {
                     }
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
-                &Inst::SubStackPointer { value } => {
+                OpCode::SubStackPointer => {
+                    let value = args.dst;
                     trace!("Subtract {} from stack pointer", value);
                     self.stack_ptr -= value as usize;
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
-                Inst::Add(data) => bop!(add_op, data, Operator::Add),
-                Inst::Sub(data) => bop!(sub_op, data, Operator::Sub),
-                Inst::Mul(data) => bop!(mul_op, data, Operator::Mul),
-                Inst::Div(data) => bop!(div_op, data, Operator::Div),
-                Inst::Lt(data) => bop!(lt_op, data, Operator::Lt),
-                Inst::Lte(data) => bop!(lte_op, data, Operator::Lte),
-                Inst::Gt(data) => bop!(gt_op, data, Operator::Gt),
-                Inst::Gte(data) => bop!(gte_op, data, Operator::Gte),
-                Inst::Eq(data) => bop!(eq_op, data, Operator::Eq),
-                Inst::Neq(data) => bop!(neq_op, data, Operator::Neq),
-                &Inst::CallBuiltin {
-                    dst,
-                    func,
-                    arg_count,
-                } => {
+                OpCode::Add => bop!(add_op, args, Operator::Add),
+                OpCode::Sub => bop!(sub_op, args, Operator::Sub),
+                OpCode::Mul => bop!(mul_op, args, Operator::Mul),
+                OpCode::Div => bop!(div_op, args, Operator::Div),
+                OpCode::Lt => bop!(lt_op, args, Operator::Lt),
+                OpCode::Lte => bop!(lte_op, args, Operator::Lte),
+                OpCode::Gt => bop!(gt_op, args, Operator::Gt),
+                OpCode::Gte => bop!(gte_op, args, Operator::Gte),
+                OpCode::Eq => bop!(eq_op, args, Operator::Eq),
+                OpCode::Neq => bop!(neq_op, args, Operator::Neq),
+                OpCode::CallBuiltin => {
+                    let dst = Addr::from_raw(args.dst);
+                    let func = args.src1;
+                    let arg_count = args.src2 as u8;
                     trace!(
                         "Call builtin function {} with {} args, store result in {}",
                         self.builtins[func as usize].1, arg_count, dst
@@ -290,7 +308,8 @@ impl<'a> Vm<'a> {
                     self.call_builtin(dst, func, arg_count);
                     trace!("  -> result: {:?}", self.mem_get(dst).dbg_display());
                 }
-                &Inst::Incr { dst } => {
+                OpCode::Incr => {
+                    let dst = Addr::from_raw(args.dst);
                     trace!(
                         "Increment value {} (at {})",
                         self.mem_get(dst).dbg_display(),
@@ -305,11 +324,13 @@ impl<'a> Vm<'a> {
                         }
                     }
                 }
-                &Inst::Jump { target } => {
+                OpCode::Jump => {
+                    let target = args.dst;
                     trace!("Jump from {} to {}", self.inst_ptr, target);
                     self.inst_ptr = target as usize;
                 }
-                &Inst::JumpAddr { target } => {
+                OpCode::JumpAddr => {
+                    let target = Addr::from_raw(args.dst);
                     let target_value = self.mem_get(target);
                     let target_ip = match target_value {
                         Value::Integer(i) => *i as usize,
@@ -324,7 +345,9 @@ impl<'a> Vm<'a> {
                     );
                     self.inst_ptr = target_ip;
                 }
-                &Inst::JumpIfZero { target, cond } => {
+                OpCode::JumpIfZero => {
+                    let target = args.dst;
+                    let cond = Addr::from_raw(args.src1);
                     trace!(
                         "JumpIfZero from {} to {} if {} (at {}) is zero",
                         self.inst_ptr,

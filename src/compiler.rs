@@ -43,6 +43,14 @@ impl Addr {
     pub fn get(&self) -> usize {
         (self.0 & DATA_MASK) as usize
     }
+
+    fn raw(&self) -> u32 {
+        self.0
+    }
+
+    pub fn from_raw(raw: u32) -> Self {
+        Addr(raw)
+    }
 }
 
 impl Display for Addr {
@@ -70,54 +78,139 @@ impl Display for Addr {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BinaryOpData {
-    pub dst: Addr,
-    pub src1: Addr,
-    pub src2: Addr,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpCode {
+    Nop,
+    LoadAddr,
+    LoadInt,
+    InitMapIterationList,
+    LoadIterationKey,
+    LoadCollectionItem,
+    AddStackPointer,
+    SubStackPointer,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+    Eq,
+    Neq,
+    Incr,
+    CallBuiltin,
+    Jump,
+    JumpAddr,
+    JumpIfZero,
 }
 
 #[derive(Debug, Clone)]
-pub enum Inst {
-    Nop,
-    LoadAddr { dst: Addr, src: Addr },
-    LoadInt { dst: Addr, value: i32 },
-    InitMapIterationList { dst: Addr },
-    LoadIterationKey { dst: Addr, src: Addr, index: Addr },
-    LoadCollectionItem { dst: Addr, src: Addr, key: Addr },
-    AddStackPointer { value: u32 },
-    SubStackPointer { value: u32 },
-    Add(BinaryOpData),
-    Sub(BinaryOpData),
-    Mul(BinaryOpData),
-    Div(BinaryOpData),
-    Lt(BinaryOpData),
-    Gt(BinaryOpData),
-    Lte(BinaryOpData),
-    Gte(BinaryOpData),
-    Eq(BinaryOpData),
-    Neq(BinaryOpData),
-    Incr { dst: Addr },
-    CallBuiltin { dst: Addr, func: u32, arg_count: u8 },
-    Jump { target: u32 },
-    JumpAddr { target: Addr },
-    JumpIfZero { target: u32, cond: Addr },
+pub struct OpArgs {
+    pub dst: u32,
+    pub src1: u32,
+    pub src2: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Inst {
+    pub opcode: OpCode,
+    pub args: OpArgs,
 }
 
 impl Inst {
-    fn set_incr_dst(&mut self, dst: Addr) {
-        match self {
-            Inst::Incr { dst: d } => *d = dst,
-            _ => panic!("Cannot set incr dst on non-incr instruction"),
+    fn new(opcode: OpCode, dst: u32, src1: u32, src2: u32) -> Self {
+        Inst {
+            opcode,
+            args: OpArgs { dst, src1, src2 },
         }
     }
 
+    pub fn nop() -> Self {
+        Self::new(OpCode::Nop, 0, 0, 0)
+    }
+
+    pub fn load_addr(dst: Addr, src: Addr) -> Self {
+        Self::new(OpCode::LoadAddr, dst.raw(), src.raw(), 0)
+    }
+
+    pub fn load_int(dst: Addr, value: i32) -> Self {
+        Self::new(
+            OpCode::LoadInt,
+            dst.raw(),
+            u32::from_ne_bytes(value.to_ne_bytes()),
+            0,
+        )
+    }
+
+    pub fn init_map_iteration_list(dst: Addr) -> Self {
+        Self::new(OpCode::InitMapIterationList, dst.raw(), 0, 0)
+    }
+
+    pub fn load_iteration_key(dst: Addr, src: Addr, index: Addr) -> Self {
+        Self::new(OpCode::LoadIterationKey, dst.raw(), src.raw(), index.raw())
+    }
+    pub fn load_collection_item(dst: Addr, src: Addr, key: Addr) -> Self {
+        Self::new(OpCode::LoadCollectionItem, dst.raw(), src.raw(), key.raw())
+    }
+
+    pub fn add_stack_pointer(value: u32) -> Self {
+        Self::new(OpCode::AddStackPointer, value, 0, 0)
+    }
+
+    pub fn sub_stack_pointer(value: u32) -> Self {
+        Self::new(OpCode::SubStackPointer, value, 0, 0)
+    }
+
+    pub fn binary_op(op: Operator, dst: Addr, src1: Addr, src2: Addr) -> Self {
+        let opcode = match op {
+            Operator::Add => OpCode::Add,
+            Operator::Sub => OpCode::Sub,
+            Operator::Mul => OpCode::Mul,
+            Operator::Div => OpCode::Div,
+            Operator::Lt => OpCode::Lt,
+            Operator::Gt => OpCode::Gt,
+            Operator::Lte => OpCode::Lte,
+            Operator::Gte => OpCode::Gte,
+            Operator::Eq => OpCode::Eq,
+            Operator::Neq => OpCode::Neq,
+        };
+
+        Self::new(opcode, dst.raw(), src1.raw(), src2.raw())
+    }
+
+    pub fn incr(dst: Addr) -> Self {
+        Self::new(OpCode::Incr, dst.raw(), 0, 0)
+    }
+
+    pub fn call_builtin(dst: Addr, func: u32, arg_count: u8) -> Self {
+        Self::new(OpCode::CallBuiltin, dst.raw(), func, arg_count as u32)
+    }
+
+    pub fn jump(target: u32) -> Self {
+        Self::new(OpCode::Jump, target, 0, 0)
+    }
+
+    pub fn jump_addr(target: Addr) -> Self {
+        Self::new(OpCode::JumpAddr, target.raw(), 0, 0)
+    }
+
+    pub fn jump_if_zero(target: u32, cond: Addr) -> Self {
+        Self::new(OpCode::JumpIfZero, target, cond.raw(), 0)
+    }
+
+    fn set_incr_dst(&mut self, dst: Addr) {
+        assert_eq!(self.opcode, OpCode::Incr);
+        self.args.dst = dst.raw();
+    }
+
     fn set_jump_target(&mut self, target_ip: u32) {
-        match self {
-            Inst::Jump { target } => *target = target_ip,
-            Inst::JumpIfZero { target, .. } => *target = target_ip,
-            _ => panic!("Cannot set jump target on non-jump instruction"),
-        }
+        assert!(
+            matches!(self.opcode, OpCode::Jump | OpCode::JumpIfZero),
+            "Can only set jump target on jump instructions"
+        );
+
+        self.args.dst = target_ip;
     }
 }
 
@@ -225,13 +318,7 @@ impl<'a> Compilation<'a> {
         let var_addr = self.variable_offset(var, node);
         let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
         if expr_addr != var_addr {
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: var_addr,
-                    src: expr_addr,
-                },
-                node,
-            );
+            self.push_instruction(Inst::load_addr(var_addr, expr_addr), node);
         }
     }
 
@@ -255,25 +342,7 @@ impl<'a> Compilation<'a> {
                     return (self.make_literal(&folded_value), Some(folded_value));
                 }
 
-                let binop_data = BinaryOpData {
-                    dst: dst_suggestion,
-                    src1: laddr,
-                    src2: raddr,
-                };
-                let inst = match op {
-                    Operator::Add => Inst::Add(binop_data),
-                    Operator::Sub => Inst::Sub(binop_data),
-                    Operator::Mul => Inst::Mul(binop_data),
-                    Operator::Div => Inst::Div(binop_data),
-                    Operator::Lt => Inst::Lt(binop_data),
-                    Operator::Gt => Inst::Gt(binop_data),
-                    Operator::Lte => Inst::Lte(binop_data),
-                    Operator::Gte => Inst::Gte(binop_data),
-                    Operator::Eq => Inst::Eq(binop_data),
-                    Operator::Neq => Inst::Neq(binop_data),
-                };
-
-                self.push_instruction(inst, expr);
+                self.push_instruction(Inst::binary_op(*op, dst_suggestion, laddr, raddr), expr);
                 (dst_suggestion, None)
             }
             AstNodeKind::FunctionCall(..) => {
@@ -302,7 +371,7 @@ impl<'a> Compilation<'a> {
         let fn_skip_jump_ip = self.cur_inst_ptr();
         // Function instructions are defined "in the middle" of the instructions so we need to skip
         // over it to make top level code work correctly.
-        self.push_instruction(Inst::Jump { target: 0 }, node);
+        self.push_instruction(Inst::jump(0), node);
 
         let fn_start_ip = self.cur_inst_ptr();
 
@@ -315,10 +384,7 @@ impl<'a> Compilation<'a> {
         // Store return address in a stack variable.
         let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
         self.push_instruction(
-            Inst::LoadAddr {
-                dst: return_addr_var_addr,
-                src: FN_CALL_RETURN_ADDR_REG,
-            },
+            Inst::load_addr(return_addr_var_addr, FN_CALL_RETURN_ADDR_REG),
             node,
         );
 
@@ -327,33 +393,18 @@ impl<'a> Compilation<'a> {
             let arg_name = arg.get_var_name().expect("Parsed correctly");
             let arg_addr = self.variable_offset(arg_name, arg);
             let arg_reg = Addr::abs(ARG_REG_START + arg_idx as u32);
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: arg_addr,
-                    src: arg_reg,
-                },
-                node,
-            );
+            self.push_instruction(Inst::load_addr(arg_addr, arg_reg), node);
         }
 
         self.compile_block(body, &mut fn_ctx);
 
         // Default return value is 1
-        self.push_instruction(
-            Inst::LoadInt {
-                dst: FN_RETURN_VALUE_REG,
-                value: 1,
-            },
-            node,
-        );
+        self.push_instruction(Inst::load_int(FN_RETURN_VALUE_REG, 1), node);
 
         // Store return address back to the return address register.
         // TODO: This might not be needed if we clean up the stack in the caller.
         self.push_instruction(
-            Inst::LoadAddr {
-                dst: FN_CALL_RETURN_ADDR_REG,
-                src: return_addr_var_addr,
-            },
+            Inst::load_addr(FN_CALL_RETURN_ADDR_REG, return_addr_var_addr),
             node,
         );
 
@@ -361,12 +412,7 @@ impl<'a> Compilation<'a> {
         self.block_end(body, &fn_ctx);
 
         // Jump back to return address.
-        self.push_instruction(
-            Inst::JumpAddr {
-                target: FN_CALL_RETURN_ADDR_REG,
-            },
-            node,
-        );
+        self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
 
         let fn_end_ip = self.cur_inst_ptr();
         self.inst_mut(fn_skip_jump_ip).set_jump_target(fn_end_ip);
@@ -378,39 +424,25 @@ impl<'a> Compilation<'a> {
         };
         let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG, ctx);
         if expr_addr != FN_RETURN_VALUE_REG {
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: FN_RETURN_VALUE_REG,
-                    src: expr_addr,
-                },
-                node,
-            );
+            self.push_instruction(Inst::load_addr(FN_RETURN_VALUE_REG, expr_addr), node);
         }
 
         // Store return address back to the return address register.
         // TODO: This might not be needed if we clean up the stack in the caller.
         let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
         self.push_instruction(
-            Inst::LoadAddr {
-                dst: FN_CALL_RETURN_ADDR_REG,
-                src: return_addr_var_addr,
-            },
+            Inst::load_addr(FN_CALL_RETURN_ADDR_REG, return_addr_var_addr),
             node,
         );
 
         // Clean up stack frame.
         let sub_sp = self.cur_stack_ptr_offset - ctx.fn_frame_ptr;
         if sub_sp > 0 {
-            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+            self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
 
         // Jump back to return address.
-        self.push_instruction(
-            Inst::JumpAddr {
-                target: FN_CALL_RETURN_ADDR_REG,
-            },
-            node,
-        );
+        self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
     }
 
     fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut Context) {
@@ -421,13 +453,7 @@ impl<'a> Compilation<'a> {
             let arg_reg = Addr::abs(ARG_REG_START + i as u32);
             let (res_addr, _) = self.compile_expression(arg, arg_reg, ctx);
             if res_addr != arg_reg {
-                self.push_instruction(
-                    Inst::LoadAddr {
-                        dst: arg_reg,
-                        src: res_addr,
-                    },
-                    arg,
-                );
+                self.push_instruction(Inst::load_addr(arg_reg, res_addr), arg);
             }
         }
     }
@@ -459,11 +485,7 @@ impl<'a> Compilation<'a> {
             }
 
             self.push_instruction(
-                Inst::CallBuiltin {
-                    dst,
-                    func: *func_index as u32,
-                    arg_count: args.len() as u8,
-                },
+                Inst::call_builtin(dst, *func_index as u32, args.len() as u8),
                 node,
             );
         } else if let Some(&(fn_start_ip, args_req)) = self.functions.get(name) {
@@ -473,64 +495,27 @@ impl<'a> Compilation<'a> {
 
             // Store return address (placeholder)
             let load_ret_addr_ip = self.cur_inst_ptr();
-            self.push_instruction(Inst::Nop, node);
+            self.push_instruction(Inst::nop(), node);
 
             // Store temporaries to survive the function call.
-            self.push_instruction(Inst::AddStackPointer { value: 2 }, node);
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: Addr::stack(1),
-                    src: RESULT_REG1,
-                },
-                node,
-            );
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: Addr::stack(0),
-                    src: RESULT_REG2,
-                },
-                node,
-            );
+            self.push_instruction(Inst::add_stack_pointer(2), node);
+            self.push_instruction(Inst::load_addr(Addr::stack(1), RESULT_REG1), node);
+            self.push_instruction(Inst::load_addr(Addr::stack(0), RESULT_REG2), node);
 
             // Jump to the function.
-            self.push_instruction(
-                Inst::Jump {
-                    target: fn_start_ip,
-                },
-                node,
-            );
+            self.push_instruction(Inst::jump(fn_start_ip), node);
 
             // Store return address (placeholder)
-            *self.inst_mut(load_ret_addr_ip) = Inst::LoadInt {
-                dst: FN_CALL_RETURN_ADDR_REG,
-                value: self.cur_inst_ptr() as i32,
-            };
+            *self.inst_mut(load_ret_addr_ip) =
+                Inst::load_int(FN_CALL_RETURN_ADDR_REG, self.cur_inst_ptr() as i32);
 
             // Restore temporaries after the function call.
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: RESULT_REG2,
-                    src: Addr::stack(0),
-                },
-                node,
-            );
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: RESULT_REG1,
-                    src: Addr::stack(1),
-                },
-                node,
-            );
-            self.push_instruction(Inst::SubStackPointer { value: 2 }, node);
+            self.push_instruction(Inst::load_addr(RESULT_REG2, Addr::stack(0)), node);
+            self.push_instruction(Inst::load_addr(RESULT_REG1, Addr::stack(1)), node);
+            self.push_instruction(Inst::sub_stack_pointer(2), node);
 
             // Load return value to the correct location.
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst,
-                    src: FN_RETURN_VALUE_REG,
-                },
-                node,
-            );
+            self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
         } else {
             self.fatal(&format!("Undefined function: {}", name), node);
         }
@@ -547,25 +532,13 @@ impl<'a> Compilation<'a> {
         let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
         let (addr, _) = self.compile_expression(collection, iterable_addr, &mut for_ctx);
         if addr != iterable_addr {
-            self.push_instruction(
-                Inst::LoadAddr {
-                    dst: iterable_addr,
-                    src: addr,
-                },
-                collection,
-            );
+            self.push_instruction(Inst::load_addr(iterable_addr, addr), collection);
         };
 
-        self.push_instruction(Inst::InitMapIterationList { dst: iterable_addr }, node);
+        self.push_instruction(Inst::init_map_iteration_list(iterable_addr), node);
 
         let index_addr = self.variable_offset(Self::FOR_INDEX_TEMP_VAR, node);
-        self.push_instruction(
-            Inst::LoadInt {
-                dst: index_addr,
-                value: 0,
-            },
-            node,
-        );
+        self.push_instruction(Inst::load_int(index_addr, 0), node);
 
         let for_load_key_ip = self.cur_inst_ptr();
 
@@ -579,46 +552,27 @@ impl<'a> Compilation<'a> {
         };
         let key_addr = self.variable_offset(key_var_name, key_node);
         self.push_instruction(
-            Inst::LoadIterationKey {
-                dst: key_addr,
-                src: iterable_addr,
-                index: index_addr,
-            },
+            Inst::load_iteration_key(key_addr, iterable_addr, index_addr),
             key_node,
         );
 
         let for_exit_jump_ip = self.cur_inst_ptr();
         // Placeholder
-        self.push_instruction(
-            Inst::JumpIfZero {
-                target: 0,
-                cond: SUCCESS_FLAG_REG,
-            },
-            node,
-        );
+        self.push_instruction(Inst::jump_if_zero(0, SUCCESS_FLAG_REG), node);
 
         if let Some(item_node) = item {
             let item_var_name = item_node.get_var_name().expect("Parsed correctly");
             let item_addr = self.variable_offset(item_var_name, item_node);
             self.push_instruction(
-                Inst::LoadCollectionItem {
-                    dst: item_addr,
-                    src: iterable_addr,
-                    key: key_addr,
-                },
+                Inst::load_collection_item(item_addr, iterable_addr, key_addr),
                 item_node,
             );
         }
 
         self.compile_block(body, &mut for_ctx);
 
-        self.push_instruction(Inst::Incr { dst: index_addr }, node);
-        self.push_instruction(
-            Inst::Jump {
-                target: for_load_key_ip,
-            },
-            node,
-        );
+        self.push_instruction(Inst::incr(index_addr), node);
+        self.push_instruction(Inst::jump(for_load_key_ip), node);
 
         let loop_end_ip = self.cur_inst_ptr();
         self.inst_mut(for_exit_jump_ip).set_jump_target(loop_end_ip);
@@ -642,23 +596,23 @@ impl<'a> Compilation<'a> {
     fn compile_continue(&mut self, node: &'a AstNode, ctx: &mut Context) {
         let sub_sp = self.cur_stack_ptr_offset - ctx.loop_stack_ptr;
         if sub_sp > 0 {
-            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+            self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
         ctx.loop_continues.push(self.cur_inst_ptr());
         // Placeholder
-        self.push_instruction(Inst::Incr { dst: Addr::abs(0) }, node);
+        self.push_instruction(Inst::incr(Addr::abs(0)), node);
         // Placeholder
-        self.push_instruction(Inst::Jump { target: 0 }, node);
+        self.push_instruction(Inst::jump(0), node);
     }
 
     fn compile_break(&mut self, node: &'a AstNode, ctx: &mut Context) {
         let sub_sp = self.cur_stack_ptr_offset - ctx.loop_frame_ptr;
         if sub_sp > 0 {
-            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+            self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
         ctx.loop_breaks.push(self.cur_inst_ptr());
         // Placeholder
-        self.push_instruction(Inst::Jump { target: 0 }, node);
+        self.push_instruction(Inst::jump(0), node);
     }
 
     fn compile_if_statement(&mut self, node: &'a AstNode, ctx: &mut Context) {
@@ -680,20 +634,14 @@ impl<'a> Compilation<'a> {
 
         let if_jump_ip = self.cur_inst_ptr();
         // Placeholder
-        self.push_instruction(
-            Inst::JumpIfZero {
-                target: 0,
-                cond: cond_addr,
-            },
-            node,
-        );
+        self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
 
         self.compile_block_full(block, ctx);
 
         if let Some(else_block) = else_block {
             let else_jump_ip = self.cur_inst_ptr();
             // Placeholder
-            self.push_instruction(Inst::Jump { target: 0 }, node);
+            self.push_instruction(Inst::jump(0), node);
 
             let else_start_ip = self.cur_inst_ptr();
             self.instructions[if_jump_ip as usize].set_jump_target(else_start_ip);
@@ -793,7 +741,7 @@ impl<'a> Compilation<'a> {
 
         let add_sp = cur_scope_var_decls.len() as u32;
         if add_sp > 0 {
-            self.push_instruction(Inst::AddStackPointer { value: add_sp }, node);
+            self.push_instruction(Inst::add_stack_pointer(add_sp), node);
             self.cur_stack_ptr_offset += add_sp;
         }
         self.scope_var_decls.push(cur_scope_var_decls);
@@ -816,7 +764,7 @@ impl<'a> Compilation<'a> {
     fn block_end(&mut self, node: &'a AstNode, ctx: &Context) {
         let sub_sp = self.cur_stack_ptr_offset - ctx.block_frame_ptr;
         if sub_sp > 0 {
-            self.push_instruction(Inst::SubStackPointer { value: sub_sp }, node);
+            self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
             self.cur_stack_ptr_offset -= sub_sp;
         }
         self.scope_var_decls.pop();
