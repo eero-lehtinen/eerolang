@@ -130,11 +130,8 @@ impl<'a> Vm<'a> {
         }
 
         while self.inst_ptr < self.instructions.len() {
-            // trace!(
-            //     "IP {}: {:?}",
-            //     self.inst_ptr, self.instructions[self.inst_ptr]
-            // );
-            //
+            trace!("IP {}: {}", self.inst_ptr, self.instructions[self.inst_ptr]);
+
             let inst_ptr = self.inst_ptr;
             let inst = &self.instructions[inst_ptr];
             let Inst { opcode, args } = inst;
@@ -160,7 +157,7 @@ impl<'a> Vm<'a> {
                     trace!("Load int {} to {}", value, dst);
                     self.mem_set(dst, value.into());
                 }
-                OpCode::InitMapIterationList => {
+                OpCode::InitMapIter => {
                     let dst = Addr::from_raw(args.dst);
                     trace!(
                         "Init map iteration list for {} (at {})",
@@ -185,7 +182,7 @@ impl<'a> Vm<'a> {
                         }
                     };
                 }
-                OpCode::LoadIterationKey => {
+                OpCode::LoadIterKey => {
                     let dst = Addr::from_raw(args.dst);
                     let src = Addr::from_raw(args.src1);
                     let index = Addr::from_raw(args.src2);
@@ -247,7 +244,7 @@ impl<'a> Vm<'a> {
                         self.mem_get(SUCCESS_FLAG_REG).dbg_display()
                     );
                 }
-                OpCode::LoadCollectionItem => {
+                OpCode::LoadItem => {
                     let dst = Addr::from_raw(args.dst);
                     let src = Addr::from_raw(args.src1);
                     let key = Addr::from_raw(args.src2);
@@ -272,16 +269,20 @@ impl<'a> Vm<'a> {
                         );
                     }
                 }
-                OpCode::AddStackPointer => {
+                OpCode::AddStack => {
                     let value = args.dst;
                     trace!("Add {} to stack pointer", value);
                     self.stack_ptr += value as usize;
                     if self.stack_ptr >= self.memory.len() {
-                        self.fatal("Stack overflow");
+                        self.fatal(&format!(
+                            "Stack overflow: stack pointer {} exceeds memory size {}",
+                            self.stack_ptr,
+                            self.memory.len()
+                        ));
                     }
                     debug_assert!(self.stack_ptr >= self.sp_start);
                 }
-                OpCode::SubStackPointer => {
+                OpCode::SubStack => {
                     let value = args.dst;
                     trace!("Subtract {} from stack pointer", value);
                     self.stack_ptr -= value as usize;

@@ -56,7 +56,7 @@ impl Addr {
 impl Display for Addr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_stack() {
-            write!(f, "S{}", self.get())
+            write!(f, "S{:<4}", self.get())
         } else if let Some(name) = [
             ("RES1", RESULT_REG1),
             ("RES2", RESULT_REG2),
@@ -67,13 +67,13 @@ impl Display for Addr {
         .iter()
         .find_map(|(name, addr)| if *addr == *self { Some(*name) } else { None })
         {
-            write!(f, "{}", name)
+            write!(f, "{:<5}", name)
         } else if self.get() >= ARG_REG_START as usize
             && self.get() < ARG_REG_START as usize + ARG_REG_COUNT as usize
         {
-            write!(f, "ARG{}", self.get() - ARG_REG_START as usize)
+            write!(f, "ARG{:<2}", self.get() - ARG_REG_START as usize)
         } else {
-            write!(f, "A{}", self.get())
+            write!(f, "A{:<4}", self.get())
         }
     }
 }
@@ -83,11 +83,11 @@ pub enum OpCode {
     Nop,
     LoadAddr,
     LoadInt,
-    InitMapIterationList,
-    LoadIterationKey,
-    LoadCollectionItem,
-    AddStackPointer,
-    SubStackPointer,
+    InitMapIter,
+    LoadIterKey,
+    LoadItem,
+    AddStack,
+    SubStack,
     Add,
     Sub,
     Mul,
@@ -103,6 +103,12 @@ pub enum OpCode {
     Jump,
     JumpAddr,
     JumpIfZero,
+}
+
+impl Display for OpCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -144,22 +150,22 @@ impl Inst {
     }
 
     pub fn init_map_iteration_list(dst: Addr) -> Self {
-        Self::new(OpCode::InitMapIterationList, dst.raw(), 0, 0)
+        Self::new(OpCode::InitMapIter, dst.raw(), 0, 0)
     }
 
     pub fn load_iteration_key(dst: Addr, src: Addr, index: Addr) -> Self {
-        Self::new(OpCode::LoadIterationKey, dst.raw(), src.raw(), index.raw())
+        Self::new(OpCode::LoadIterKey, dst.raw(), src.raw(), index.raw())
     }
     pub fn load_collection_item(dst: Addr, src: Addr, key: Addr) -> Self {
-        Self::new(OpCode::LoadCollectionItem, dst.raw(), src.raw(), key.raw())
+        Self::new(OpCode::LoadItem, dst.raw(), src.raw(), key.raw())
     }
 
     pub fn add_stack_pointer(value: u32) -> Self {
-        Self::new(OpCode::AddStackPointer, value, 0, 0)
+        Self::new(OpCode::AddStack, value, 0, 0)
     }
 
     pub fn sub_stack_pointer(value: u32) -> Self {
-        Self::new(OpCode::SubStackPointer, value, 0, 0)
+        Self::new(OpCode::SubStack, value, 0, 0)
     }
 
     pub fn binary_op(op: Operator, dst: Addr, src1: Addr, src2: Addr) -> Self {
@@ -211,6 +217,74 @@ impl Inst {
         );
 
         self.args.dst = target_ip;
+    }
+}
+
+impl Display for Inst {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:<10} ", &format!("{}", self.opcode))?;
+        match self.opcode {
+            OpCode::Nop => {}
+            OpCode::LoadAddr => write!(
+                f,
+                "{} {}",
+                Addr::from_raw(self.args.dst),
+                Addr::from_raw(self.args.src1)
+            )?,
+            OpCode::LoadInt => write!(
+                f,
+                "{} {:<5}",
+                Addr::from_raw(self.args.dst),
+                i32::from_ne_bytes(self.args.src1.to_ne_bytes())
+            )?,
+            OpCode::InitMapIter => write!(f, "{}", Addr::from_raw(self.args.dst))?,
+            OpCode::LoadIterKey => write!(
+                f,
+                "{} {} {}",
+                Addr::from_raw(self.args.dst),
+                Addr::from_raw(self.args.src1),
+                Addr::from_raw(self.args.src2)
+            )?,
+            OpCode::LoadItem => write!(
+                f,
+                "{} {} {}",
+                Addr::from_raw(self.args.dst),
+                Addr::from_raw(self.args.src1),
+                Addr::from_raw(self.args.src2)
+            )?,
+            OpCode::AddStack | OpCode::SubStack => write!(f, "{:<5}", self.args.dst)?,
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Lt
+            | OpCode::Gt
+            | OpCode::Lte
+            | OpCode::Gte
+            | OpCode::Eq
+            | OpCode::Neq => write!(
+                f,
+                "{} {} {}",
+                Addr::from_raw(self.args.dst),
+                Addr::from_raw(self.args.src1),
+                Addr::from_raw(self.args.src2)
+            )?,
+            OpCode::Incr => write!(f, "{}", Addr::from_raw(self.args.dst))?,
+            OpCode::CallBuiltin => write!(
+                f,
+                "{} {:<5} {:<5}",
+                Addr::from_raw(self.args.dst),
+                self.args.src1,
+                self.args.src2
+            )?,
+            OpCode::Jump => write!(f, "{:<5}", self.args.dst)?,
+            OpCode::JumpAddr => write!(f, "{}", Addr::from_raw(self.args.dst))?,
+            OpCode::JumpIfZero => {
+                write!(f, "{:<5} {}", self.args.dst, Addr::from_raw(self.args.src1))?
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -817,7 +891,7 @@ pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     c.compile_block(block, &mut ctx);
     c.block_end(block, &ctx);
     for (i, ins) in c.instructions.iter().enumerate() {
-        trace!("{:4}: {:?}", i, ins);
+        trace!("{:4}: {}", i, ins);
     }
     c
 }
