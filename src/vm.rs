@@ -143,13 +143,7 @@ impl<'a> Vm<'a> {
                 OpCode::LoadAddr => {
                     let dst = Addr::from_raw(args.dst);
                     let src = Addr::from_raw(args.src1);
-                    trace!(
-                        "Load value {} from {} to {}",
-                        self.mem_get(src).dbg_display(),
-                        src,
-                        dst
-                    );
-                    self.mem_set(dst, self.mem_get(src).clone());
+                    self.load_addr(dst, src);
                 }
                 OpCode::LoadInt => {
                     let dst = Addr::from_raw(args.dst);
@@ -159,134 +153,27 @@ impl<'a> Vm<'a> {
                 }
                 OpCode::InitMapIter => {
                     let dst = Addr::from_raw(args.dst);
-                    trace!(
-                        "Init map iteration list for {} (at {})",
-                        self.mem_get(dst).dbg_display(),
-                        dst
-                    );
-                    // Other types get ignored
-                    let map = self.mem_get(dst);
-                    if let Value::Map(map) = map {
-                        let mut map_borrow = map.borrow_mut();
-                        let MapValue {
-                            inner,
-                            iteration_keys,
-                        } = map_borrow.deref_mut();
-
-                        let mut iteration_keys_borrow = iteration_keys.borrow_mut();
-
-                        if iteration_keys_borrow.is_empty() {
-                            for key in inner.keys() {
-                                iteration_keys_borrow.push(Value::from(key));
-                            }
-                        }
-                    };
+                    self.init_map_iter(dst);
                 }
                 OpCode::LoadIterKey => {
                     let dst = Addr::from_raw(args.dst);
                     let src = Addr::from_raw(args.src1);
                     let index = Addr::from_raw(args.src2);
-                    trace!(
-                        "Load iteration key at index {} (at {}) of {} (at {}) to {}",
-                        self.mem_get(index).dbg_display(),
-                        index,
-                        self.mem_get(src).dbg_display(),
-                        src,
-                        dst
-                    );
-                    let iterable = self.mem_get(src);
-                    let index = self.mem_get(index);
-                    let index = match index {
-                        Value::Integer(i) => *i,
-                        v => self.fatal(&format!(
-                            "Expected (int) as index, got {:?}",
-                            v.dbg_display()
-                        )),
-                    };
-
-                    let key: Option<Value> = match iterable {
-                        Value::List(l) => {
-                            let list = l.borrow();
-                            if index < 0 || index >= list.len() as i64 {
-                                None
-                            } else {
-                                Some((index as i64).into())
-                            }
-                        }
-                        Value::Range(r) => {
-                            if index < 0 || index >= (r.end - r.start) {
-                                None
-                            } else {
-                                Some((r.start + index).into())
-                            }
-                        }
-                        Value::Map(map) => {
-                            let map_borrow = map.borrow();
-                            let list = map_borrow.iteration_keys.borrow();
-                            if index < 0 || index >= list.len() as i64 {
-                                None
-                            } else {
-                                Some(list[index as usize].clone())
-                            }
-                        }
-                        v => self.fatal(&format!(
-                            "Expected (list/range/map) as iterable, got {:?}",
-                            v.dbg_display()
-                        )),
-                    };
-                    self.mem_set(SUCCESS_FLAG_REG, (key.is_some() as i64).into());
-                    if let Some(key) = key {
-                        self.mem_set(dst, key);
-                    }
-                    trace!(
-                        "  -> key: {:?}, success: {}",
-                        self.mem_get(dst).dbg_display(),
-                        self.mem_get(SUCCESS_FLAG_REG).dbg_display()
-                    );
+                    self.load_iter_key(dst, src, index);
                 }
                 OpCode::LoadItem => {
                     let dst = Addr::from_raw(args.dst);
                     let src = Addr::from_raw(args.src1);
                     let key = Addr::from_raw(args.src2);
-                    trace!(
-                        "Load collection item with key {} (at {}) from {} (at {}) to {}",
-                        self.mem_get(key).dbg_display(),
-                        key,
-                        self.mem_get(src).dbg_display(),
-                        src,
-                        dst
-                    );
-
-                    let iterable = self.mem_get(src);
-                    let key = self.mem_get(key);
-                    if let Value::Range(_) = iterable {
-                        self.mem_set(dst, key.clone());
-                    } else {
-                        self.mem_set(
-                            dst,
-                            builtin_get(&[iterable.clone(), key.clone()])
-                                .expect("builtin_get failed"),
-                        );
-                    }
+                    self.load_item(dst, src, key);
                 }
                 OpCode::AddStack => {
                     let value = args.dst;
-                    trace!("Add {} to stack pointer", value);
-                    self.stack_ptr += value as usize;
-                    if self.stack_ptr >= self.memory.len() {
-                        self.fatal(&format!(
-                            "Stack overflow: stack pointer {} exceeds memory size {}",
-                            self.stack_ptr,
-                            self.memory.len()
-                        ));
-                    }
-                    debug_assert!(self.stack_ptr >= self.sp_start);
+                    self.add_stack(value);
                 }
                 OpCode::SubStack => {
                     let value = args.dst;
-                    trace!("Subtract {} from stack pointer", value);
-                    self.stack_ptr -= value as usize;
-                    debug_assert!(self.stack_ptr >= self.sp_start);
+                    self.sub_stack(value);
                 }
                 OpCode::Add => bop!(add_op, args, Operator::Add),
                 OpCode::Sub => bop!(sub_op, args, Operator::Sub),
@@ -302,28 +189,11 @@ impl<'a> Vm<'a> {
                     let dst = Addr::from_raw(args.dst);
                     let func = args.src1;
                     let arg_count = args.src2 as u8;
-                    trace!(
-                        "Call builtin function {} with {} args, store result in {}",
-                        self.builtins[func as usize].1, arg_count, dst
-                    );
                     self.call_builtin(dst, func, arg_count);
-                    trace!("  -> result: {:?}", self.mem_get(dst).dbg_display());
                 }
                 OpCode::Incr => {
                     let dst = Addr::from_raw(args.dst);
-                    trace!(
-                        "Increment value {} (at {})",
-                        self.mem_get(dst).dbg_display(),
-                        dst
-                    );
-                    match self.mem_get(dst) {
-                        Value::Integer(i) => {
-                            self.mem_set(dst, Value::Integer(i + 1));
-                        }
-                        v => {
-                            self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
-                        }
-                    }
+                    self.incr(dst);
                 }
                 OpCode::Jump => {
                     let target = args.dst;
@@ -365,37 +235,7 @@ impl<'a> Vm<'a> {
             }
 
             if step_through {
-                let token = &self.tokens[self.ip_to_token[inst_ptr]];
-                let char_col = find_source_char_col(token.line, token.byte_col);
-                report_source_pos(token.line, char_col, 0);
-
-                trace!(
-                    "Regs: {}",
-                    (RESULT_REG1.get() as u32..=FN_RETURN_VALUE_REG.get() as u32)
-                        .chain(ARG_REG_START..ARG_REG_START + 6)
-                        .map(|addr| {
-                            format!(
-                                "{}={}",
-                                Addr::abs(addr),
-                                self.mem_get(Addr::abs(addr)).dbg_display()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                trace!(
-                    "Stack: {}",
-                    self.memory[self.sp_start..self.stack_ptr + 1]
-                        .iter()
-                        .map(|v| v.dbg_display())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-
-                trace!("SP {}", self.stack_ptr - self.sp_start);
-
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
+                self.step(inst_ptr);
             }
 
             if self.inst_ptr == inst_ptr {
@@ -404,8 +244,196 @@ impl<'a> Vm<'a> {
         }
     }
 
-    #[inline]
+    fn incr(&mut self, dst: Addr) {
+        trace!(
+            "Increment value {} (at {})",
+            self.mem_get(dst).dbg_display(),
+            dst
+        );
+        match self.mem_get(dst) {
+            Value::Integer(i) => {
+                self.mem_set(dst, Value::Integer(i + 1));
+            }
+            v => {
+                self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
+            }
+        }
+    }
+
+    fn sub_stack(&mut self, value: u32) {
+        trace!("Subtract {} from stack pointer", value);
+        self.stack_ptr -= value as usize;
+        debug_assert!(self.stack_ptr >= self.sp_start);
+    }
+
+    fn add_stack(&mut self, value: u32) {
+        trace!("Add {} to stack pointer", value);
+        self.stack_ptr += value as usize;
+        if self.stack_ptr >= self.memory.len() {
+            self.fatal(&format!(
+                "Stack overflow: stack pointer {} exceeds memory size {}",
+                self.stack_ptr,
+                self.memory.len()
+            ));
+        }
+        debug_assert!(self.stack_ptr >= self.sp_start);
+    }
+
+    fn step(&mut self, inst_ptr: usize) {
+        let token = &self.tokens[self.ip_to_token[inst_ptr]];
+        let char_col = find_source_char_col(token.line, token.byte_col);
+        report_source_pos(token.line, char_col, 0);
+
+        trace!(
+            "Regs: {}",
+            (RESULT_REG1.get() as u32..=FN_RETURN_VALUE_REG.get() as u32)
+                .chain(ARG_REG_START..ARG_REG_START + 6)
+                .map(|addr| {
+                    format!(
+                        "{}={}",
+                        Addr::abs(addr),
+                        self.mem_get(Addr::abs(addr)).dbg_display()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        trace!(
+            "Stack: {}",
+            self.memory[self.sp_start..self.stack_ptr + 1]
+                .iter()
+                .map(|v| v.dbg_display())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        trace!("SP {}", self.stack_ptr - self.sp_start);
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
+    }
+
+    fn load_addr(&mut self, dst: Addr, src: Addr) {
+        trace!(
+            "Load value {} from {} to {}",
+            self.mem_get(src).dbg_display(),
+            src,
+            dst
+        );
+        self.mem_set(dst, self.mem_get(src).clone());
+    }
+
+    fn init_map_iter(&mut self, dst: Addr) {
+        trace!(
+            "Init map iteration list for {} (at {})",
+            self.mem_get(dst).dbg_display(),
+            dst
+        );
+        // Other types get ignored
+        let map = self.mem_get(dst);
+        if let Value::Map(map) = map {
+            let mut map_borrow = map.borrow_mut();
+            let MapValue {
+                inner,
+                iteration_keys,
+            } = map_borrow.deref_mut();
+
+            let mut iteration_keys_borrow = iteration_keys.borrow_mut();
+
+            if iteration_keys_borrow.is_empty() {
+                for key in inner.keys() {
+                    iteration_keys_borrow.push(Value::from(key));
+                }
+            }
+        };
+    }
+
+    fn load_item(&mut self, dst: Addr, src: Addr, key: Addr) {
+        trace!(
+            "Load collection item with key {} (at {}) from {} (at {}) to {}",
+            self.mem_get(key).dbg_display(),
+            key,
+            self.mem_get(src).dbg_display(),
+            src,
+            dst
+        );
+        let iterable = self.mem_get(src);
+        let key = self.mem_get(key);
+        if let Value::Range(_) = iterable {
+            self.mem_set(dst, key.clone());
+        } else {
+            self.mem_set(
+                dst,
+                builtin_get(&[iterable.clone(), key.clone()]).expect("builtin_get failed"),
+            );
+        }
+    }
+
+    fn load_iter_key(&mut self, dst: Addr, src: Addr, index: Addr) {
+        trace!(
+            "Load iteration key at index {} (at {}) of {} (at {}) to {}",
+            self.mem_get(index).dbg_display(),
+            index,
+            self.mem_get(src).dbg_display(),
+            src,
+            dst
+        );
+        let iterable = self.mem_get(src);
+        let index = self.mem_get(index);
+        let index = match index {
+            Value::Integer(i) => *i,
+            v => self.fatal(&format!(
+                "Expected (int) as index, got {:?}",
+                v.dbg_display()
+            )),
+        };
+
+        let key: Option<Value> = match iterable {
+            Value::List(l) => {
+                let list = l.borrow();
+                if index < 0 || index >= list.len() as i64 {
+                    None
+                } else {
+                    Some((index as i64).into())
+                }
+            }
+            Value::Range(r) => {
+                if index < 0 || index >= (r.end - r.start) {
+                    None
+                } else {
+                    Some((r.start + index).into())
+                }
+            }
+            Value::Map(map) => {
+                let map_borrow = map.borrow();
+                let list = map_borrow.iteration_keys.borrow();
+                if index < 0 || index >= list.len() as i64 {
+                    None
+                } else {
+                    Some(list[index as usize].clone())
+                }
+            }
+            v => self.fatal(&format!(
+                "Expected (list/range/map) as iterable, got {:?}",
+                v.dbg_display()
+            )),
+        };
+        self.mem_set(SUCCESS_FLAG_REG, (key.is_some() as i64).into());
+        if let Some(key) = key {
+            self.mem_set(dst, key);
+        }
+        trace!(
+            "  -> key: {:?}, success: {}",
+            self.mem_get(dst).dbg_display(),
+            self.mem_get(SUCCESS_FLAG_REG).dbg_display()
+        );
+    }
+
     fn call_builtin(&mut self, dst: Addr, func: u32, arg_count: u8) {
+        trace!(
+            "Call builtin function {} with {} args, store result in {}",
+            self.builtins[func as usize].1, arg_count, dst
+        );
         debug_assert!((func as usize) < self.builtins.len());
         // SAFETY: non-existent functions should be hard to call
         let func_impl = unsafe { self.builtins.get_unchecked(func as usize).0 };
@@ -416,5 +444,6 @@ impl<'a> Vm<'a> {
             Err(e) => self.fatal(&format!("Error in function call: {}", e)),
         };
         self.mem_set(dst, result);
+        trace!("  -> result: {:?}", self.mem_get(dst).dbg_display());
     }
 }
