@@ -1,13 +1,1 @@
-Funktioiden muuttujien scopeissa on jotain vikaa. 
-
-Tässä tulostuu 17 jostain syystä. Jos x:n paikalle laittaa y, niin toimii ja tulee 18.
-fn test(x) {
-    return x
-}
-
-x = 10
-print(test(x-1) + test(x-1))
-
-Kai parametrit ei saisi ikinä olla kytköksissä globaaliin scopeen, varsinkin jos globaalissa scopessa se on myöhemmin. Nyt taitaa olla niin, että funktio lua parametrin, jos sitä ei vielä ole, mutta pitäisi tehdä aina se väkisin. Silleen pitää ajatella sen olevan assignmentti, eikä expressio. Samaa vikaa voipi olla muissa assignmenteissakin.
-
-Pitäisi tod näk adoptoida vaikka go:n (ja melkein kaikkien muidenkin kielten) tapa, jossa deklaraatiot ja assignmentit on ilmaistu eri tavalla. (:= vs =)
+Show syntax highlighted stuff in error messages
