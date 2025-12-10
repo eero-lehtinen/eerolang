@@ -1,0 +1,95 @@
+# Declaration and assignment
+x := 10
+
+# Only assignment
+x = x + 10
+
+# Numeric operations
+x = 10 + 5 * 2 - 3 / 1
+
+# Printing
+print("The value of x is", x)
+
+# Looping
+for i in range(5) {
+    if i > 4 {
+        break
+    }
+    x = x + i
+}
+
+# Lists (can contain any type)
+list := list(list(1), "asd", 3, list(1, 2, 3))
+
+# Iterating over a list
+for i, val in list {
+    print("Index:", i, "Value:", val)
+}
+
+# Functions
+fn fibonacci(x) {
+    if x <= 1 {
+        return x
+    }
+    return fibonacci(x - 1) + fibonacci(x - 2)
+}
+
+print("Fibonacci of 6 is", fibonacci(6))
+
+# Maps (strings as keys and any type as values)
+map := map(list("one", 1), list("two", 2), list("three", 3))
+
+for key, value in map {
+    print("Key:", key, "Value:", value)
+}
+
+# Builtins:
+
+# Prints any number of arguments of any type
+print("Different values:", x, list, map)
+
+# Sleeps for given milliseconds
+sleep(1000)
+
+# Reads a file and returns its content as a string
+file := readfile("samples/features.eel")
+# Splits a string by a delimiter and returns a list of substrings
+lines := split(file, "\n")
+
+# Converts between types
+x = int("123")
+x = float("3.14")
+x = string(456)
+
+# Gets a substring from the first index to the second (exclusive) index
+# Can also be given only the last index and the first index defaults to 0
+x = substr(file, 0, 3)
+
+# Push an element to the end of a list
+push(list, "new element")
+# Pops an element from the end of a list and returns it
+elem := pop(list)
+
+# Sets a value at index or key in a list or map
+set(list, 0, "changed")
+set(map, "one", 11)
+
+# Gets a value at index or key from a list, string or map
+elem = get(list, 0)
+elem = get("hello", 1)
+
+# Checks if a map contains a key
+exists := has(map, "three")
+
+# Removes a value at index or key from a list or map
+remove(list, 2)
+remove(map, "two")
+
+# Gets the length of a string, list or map
+length := len(list)
+
+# Modulus
+x = mod(10, 3)
+
+
+

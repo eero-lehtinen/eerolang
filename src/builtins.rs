@@ -29,6 +29,57 @@ macro_rules! fn_ok {
     };
 }
 
+pub fn builtin_list(args: &[Value]) -> ProgramFnRes {
+    let list = args.to_vec();
+    Ok(Value::list(list))
+}
+
+pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
+    let values = args
+        .iter()
+        .map(|arg| {
+            let ValueRef::List(pair) = arg.as_value_ref() else {
+                arg_bail!("all arguments to be pairs [string key, value]", args);
+            };
+            let [key, value] = &pair.borrow()[..] else {
+                arg_bail!("all arguments to be pairs [string key, value]", args);
+            };
+            if !key.is_string() {
+                arg_bail!("all arguments to be pairs [string key, value]", args);
+            };
+            Ok((key.clone(), value.clone()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let map = HashMap::from_iter(values);
+    Ok(Value::map(map))
+}
+
+pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
+    if args.is_empty() || args.len() > 2 {
+        arg_bail!("int, opt int", args);
+    };
+
+    let start = &args[0];
+
+    let Some(mut start) = start.as_int() else {
+        arg_bail!("int, opt int", args);
+    };
+
+    let end = if args.len() == 2 {
+        let end_arg = &args[1];
+        let Some(end) = end_arg.as_int() else {
+            arg_bail!("int, opt int", args);
+        };
+        end
+    } else {
+        let tmp = start;
+        start = 0;
+        tmp
+    };
+
+    Ok(Value::range(start, end))
+}
+
 pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
 
@@ -75,6 +126,7 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
                         write!(&mut w, ", ").unwrap();
                     }
                 }
+                write!(&mut w, "]").unwrap();
             }
             ValueRef::Map(m) => {
                 write!(&mut w, "{{").unwrap();
@@ -270,31 +322,6 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
     Ok(Value::string(substring.to_owned()))
 }
 
-pub fn builtin_list(args: &[Value]) -> ProgramFnRes {
-    let list = args.to_vec();
-    Ok(Value::list(list))
-}
-
-pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
-    let values = args
-        .iter()
-        .map(|arg| {
-            let ValueRef::List(pair) = arg.as_value_ref() else {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
-            };
-            let [key, value] = &pair.borrow()[..] else {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
-            };
-            if !key.is_string() {
-                arg_bail!("all arguments to be pairs [string key, value]", args);
-            };
-            Ok((key.clone(), value.clone()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let map = HashMap::from_iter(values);
-    Ok(Value::map(map))
-}
-
 const PUSH_ARGS: u32 = 2;
 #[inline]
 pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
@@ -308,6 +335,25 @@ pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
             fn_ok!()
         }
         _ => arg_bail!("list, value", args),
+    }
+}
+
+const POP_ARGS: u32 = 1;
+pub fn builtin_pop(args: &[Value]) -> ProgramFnRes {
+    let [target] = args else {
+        arg_bail!("list", args);
+    };
+
+    match target.as_value_ref() {
+        ValueRef::List(l) => {
+            let mut lb = l.borrow_mut();
+            if lb.is_empty() {
+                return Err("Cannot pop from an empty list".to_string());
+            }
+            let value = lb.pop().unwrap();
+            Ok(value)
+        }
+        _ => arg_bail!("list", args),
     }
 }
 
@@ -491,32 +537,6 @@ pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
     Ok(Value::int(a % b))
 }
 
-pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
-    if args.is_empty() || args.len() > 2 {
-        arg_bail!("int, opt int", args);
-    };
-
-    let start = &args[0];
-
-    let Some(mut start) = start.as_int() else {
-        arg_bail!("int, opt int", args);
-    };
-
-    let end = if args.len() == 2 {
-        let end_arg = &args[1];
-        let Some(end) = end_arg.as_int() else {
-            arg_bail!("int, opt int", args);
-        };
-        end
-    } else {
-        let tmp = start;
-        start = 0;
-        tmp
-    };
-
-    Ok(Value::range(start, end))
-}
-
 pub type ProgramFnRes = Result<Value, String>;
 pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 
@@ -550,6 +570,9 @@ impl ArgsRequred {
 
 pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
     vec![
+        ("list", builtin_list, ArgsRequred::Any),
+        ("map", builtin_map, ArgsRequred::Any),
+        ("range", builtin_range, ArgsRequred::Range(1, 2)),
         ("print", builtin_print, ArgsRequred::Any),
         ("sleep", builtin_sleep, ArgsRequred::Exact(SLEEP_ARGS)),
         (
@@ -562,15 +585,13 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("float", builtin_float, ArgsRequred::Exact(FLOAT_ARGS)),
         ("string", builtin_string, ArgsRequred::Exact(STRING_ARGS)),
         ("substr", builtin_substr, ArgsRequred::Range(2, 3)),
-        ("list", builtin_list, ArgsRequred::Any),
-        ("map", builtin_map, ArgsRequred::Any),
         ("push", builtin_push, ArgsRequred::Exact(PUSH_ARGS)),
+        ("pop", builtin_pop, ArgsRequred::Exact(POP_ARGS)),
         ("set", builtin_set, ArgsRequred::Exact(SET_ARGS)),
         ("get", builtin_get, ArgsRequred::Exact(GET_ARGS)),
-        ("remove", builtin_remove, ArgsRequred::Exact(REMOVE_ARGS)),
         ("has", builtin_has, ArgsRequred::Exact(HAS_ARGS)),
+        ("remove", builtin_remove, ArgsRequred::Exact(REMOVE_ARGS)),
         ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
-        ("range", builtin_range, ArgsRequred::Range(1, 2)),
     ]
 }
