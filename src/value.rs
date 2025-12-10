@@ -225,10 +225,11 @@ impl Value {
                 if b == 0 {
                     return Err(OpError::DivisionByZero);
                 }
-                if let Some(result) = a.checked_div(b) {
-                    Value::smi(result)
+                let res = a as f64 / b as f64;
+                if res.fract() == 0.0 {
+                    Value::int(res as i64)
                 } else {
-                    Value::float(a as f64 / b as f64)
+                    Value::float(res)
                 }
             }
             (ValueRef::Smi(a), ValueRef::Float(b)) => {
