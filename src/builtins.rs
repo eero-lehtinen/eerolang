@@ -80,6 +80,10 @@ pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
                 write!(&mut w, "{{").unwrap();
                 let map = &m.borrow().inner;
                 for (j, (key, value)) in map.iter().enumerate() {
+                    let key = match key.as_value_ref() {
+                        ValueRef::String(s) => s,
+                        _ => unreachable!(),
+                    };
                     write!(&mut w, "{}: ", key).unwrap();
                     print_inner(value, &mut w);
                     if j < map.len() - 1 {
@@ -418,6 +422,38 @@ pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const REMOVE_ARGS: u32 = 2;
+pub fn builtin_remove(args: &[Value]) -> ProgramFnRes {
+    let [target, key] = args else {
+        arg_bail!("map/list, string/int", args);
+    };
+
+    match target.as_value_ref() {
+        ValueRef::Map(m) => {
+            if !key.is_string() {
+                arg_bail!("map, string", args);
+            };
+            let mut mb = m.borrow_mut();
+            let removed = mb.inner.remove(key).is_some();
+            mb.iter_keys.clear();
+            Ok(Value::bool(removed))
+        }
+        ValueRef::List(l) => {
+            let Some(index) = key.as_int() else {
+                arg_bail!("list, int", args);
+            };
+            let index = index as usize;
+            let mut l = l.borrow_mut();
+            if index >= l.len() {
+                out_of_bounds_bail!(l.len(), index);
+            }
+            l.remove(index);
+            fn_ok!()
+        }
+        _ => arg_bail!("map, string", args),
+    }
+}
+
 const LEN_ARGS: u32 = 1;
 pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     let [len] = args else {
@@ -531,6 +567,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("push", builtin_push, ArgsRequred::Exact(PUSH_ARGS)),
         ("set", builtin_set, ArgsRequred::Exact(SET_ARGS)),
         ("get", builtin_get, ArgsRequred::Exact(GET_ARGS)),
+        ("remove", builtin_remove, ArgsRequred::Exact(REMOVE_ARGS)),
         ("has", builtin_has, ArgsRequred::Exact(HAS_ARGS)),
         ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
