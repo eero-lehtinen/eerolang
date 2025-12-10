@@ -17,11 +17,6 @@ pub struct Value {
     _marker: PhantomData<Rc<ValueInner>>,
 }
 
-pub enum IntOrRc<'a> {
-    Int(i32),
-    Rc(&'a ValueInner),
-}
-
 pub enum ValueRef<'a> {
     Smi(i32),
     Float(f64),
@@ -67,7 +62,7 @@ impl Value {
     }
 
     fn rc(rc: Rc<ValueInner>) -> Self {
-        assert!(
+        debug_assert!(
             mem::align_of::<ValueInner>() > 1,
             "Type T must have alignment > 1"
         );
@@ -75,7 +70,7 @@ impl Value {
         let ptr = Rc::into_raw(rc);
         let bits = ptr as usize;
 
-        assert!(
+        debug_assert!(
             bits & Self::TAG_MASK == 0,
             "Pointer was not properly aligned"
         );
@@ -156,15 +151,6 @@ impl Value {
 
     pub fn is_string(&self) -> bool {
         matches!(self.as_value_ref(), ValueRef::String(_))
-    }
-
-    pub fn as_int_or_rc(&'_ self) -> IntOrRc<'_> {
-        if self.is_smi() {
-            IntOrRc::Int((self.bits >> 32) as i32)
-        } else {
-            let ptr = self.bits as *const ValueInner;
-            unsafe { IntOrRc::Rc(&*ptr) }
-        }
     }
 
     pub fn add(&self, other: &Self) -> OpResult {
@@ -368,66 +354,65 @@ impl Clone for Value {
 
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.as_int_or_rc() {
-            IntOrRc::Int(i) => write!(f, "Int({})", i),
-            IntOrRc::Rc(rc) => match rc {
-                ValueInner::Float(fl) => write!(f, "Float({})", fl),
-                ValueInner::Range(start, end) => write!(f, "Range({}, {})", start, end),
-                ValueInner::String(s) => write!(f, "String({})", s),
-                ValueInner::List(lst) => {
-                    write!(f, "List([")?;
-                    for (i, val) in lst.borrow().iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{:?}", val)?;
+        match self.as_value_ref() {
+            ValueRef::Smi(i) => write!(f, "Smi({})", i),
+            ValueRef::Float(fl) => write!(f, "Float({})", fl),
+            ValueRef::Range(start, end) => write!(f, "Range({}, {})", start, end),
+            ValueRef::String(s) => write!(f, "String({})", s),
+            ValueRef::List(lst) => {
+                write!(f, "List([")?;
+                for (i, val) in lst.borrow().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, "])")
+                    write!(f, "{:?}", val)?;
                 }
-                ValueInner::Map(map) => {
-                    write!(f, "Map{{")?;
-                    for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{:?}: {:?}", key, val)?;
+                write!(f, "])")
+            }
+            ValueRef::Map(map) => {
+                write!(f, "Map{{")?;
+                for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, "}}")
+                    write!(f, "{:?}: {:?}", key, val)?;
                 }
-            },
+                write!(f, "}}")
+            }
         }
     }
 }
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.as_int_or_rc() {
-            IntOrRc::Int(i) => write!(f, "num {}", i),
-            IntOrRc::Rc(rc) => match rc {
-                ValueInner::Float(fl) => write!(f, "num {}", fl),
-                ValueInner::Range(start, end) => write!(f, "range {}-{}", start, end),
-                ValueInner::String(s) => write!(f, "str \"{}\"", s),
-                ValueInner::List(lst) => {
-                    write!(f, "list[")?;
-                    for (i, val) in lst.borrow().iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", val)?;
+        if let Some(i) = self.as_int() {
+            return write!(f, "int {}", i);
+        }
+        match self.as_value_ref() {
+            ValueRef::Float(fl) => write!(f, "float {}", fl),
+            ValueRef::Range(start, end) => write!(f, "range {}-{}", start, end),
+            ValueRef::String(s) => write!(f, "str \"{}\"", s),
+            ValueRef::List(lst) => {
+                write!(f, "list[")?;
+                for (i, val) in lst.borrow().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, "]")
+                    write!(f, "{}", val)?;
                 }
-                ValueInner::Map(map) => {
-                    write!(f, "map{{")?;
-                    for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}: {}", key, val)?;
+                write!(f, "]")
+            }
+            ValueRef::Map(map) => {
+                write!(f, "map{{")?;
+                for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, "}}")
+                    write!(f, "{}: {}", key, val)?;
                 }
-            },
+                write!(f, "}}")
+            }
+            _ => unreachable!(),
         }
     }
 }

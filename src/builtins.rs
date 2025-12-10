@@ -2,7 +2,7 @@ use std::io::{Stdout, Write};
 
 use foldhash::HashMap;
 
-use crate::value::{IntOrRc, Value, ValueInner, ValueRef, type_display};
+use crate::value::{Value, ValueRef, type_display};
 
 macro_rules! arg_bail {
     ($expected:expr, $args:expr) => {{
@@ -32,66 +32,62 @@ macro_rules! fn_ok {
 pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
 
-    let print_inner = |item: &Value, w: &mut Stdout| match item.as_int_or_rc() {
-        IntOrRc::Int(ii) => {
+    let print_inner = |item: &Value, w: &mut Stdout| match item.as_value_ref() {
+        ValueRef::Smi(ii) => {
             write!(w, "{}", ii).unwrap();
         }
-        IntOrRc::Rc(rc_item) => match rc_item {
-            ValueInner::Float(ff) => {
-                write!(w, "{}", ff).unwrap();
-            }
-            ValueInner::Range(r_start, r_end) => {
-                write!(w, "{}-{}", r_start, r_end).unwrap();
-            }
-            ValueInner::String(ss) => {
-                write!(w, "{}", ss).unwrap();
-            }
-            ValueInner::List(_) => {
-                write!(w, "<nested list>").unwrap();
-            }
-            ValueInner::Map(_) => {
-                write!(w, "<nested map>").unwrap();
-            }
-        },
+        ValueRef::Float(ff) => {
+            write!(w, "{}", ff).unwrap();
+        }
+        ValueRef::Range(r_start, r_end) => {
+            write!(w, "{}-{}", r_start, r_end).unwrap();
+        }
+        ValueRef::String(ss) => {
+            write!(w, "{}", ss).unwrap();
+        }
+        ValueRef::List(_) => {
+            write!(w, "<nested list>").unwrap();
+        }
+        ValueRef::Map(_) => {
+            write!(w, "<nested map>").unwrap();
+        }
     };
 
     for (i, arg) in args.iter().enumerate() {
-        match arg.as_int_or_rc() {
-            IntOrRc::Int(int) => {
+        match arg.as_value_ref() {
+            ValueRef::Smi(int) => {
                 write!(&mut w, "{}", int).unwrap();
             }
-            IntOrRc::Rc(rc) => match rc {
-                ValueInner::Float(f) => {
-                    write!(&mut w, "{}", f).unwrap();
-                }
-                ValueInner::Range(r_start, r_end) => {
-                    write!(&mut w, "{}-{}", r_start, r_end).unwrap();
-                }
-                ValueInner::String(s) => {
-                    write!(&mut w, "{}", s).unwrap();
-                }
-                ValueInner::List(l) => {
-                    write!(&mut w, "[").unwrap();
-                    for (j, item) in l.borrow().iter().enumerate() {
-                        print_inner(item, &mut w);
-                        if j < l.borrow().len() - 1 {
-                            write!(&mut w, ", ").unwrap();
-                        }
+            ValueRef::Float(f) => {
+                write!(&mut w, "{}", f).unwrap();
+            }
+            ValueRef::Range(r_start, r_end) => {
+                write!(&mut w, "{}-{}", r_start, r_end).unwrap();
+            }
+            ValueRef::String(s) => {
+                write!(&mut w, "{}", s).unwrap();
+            }
+            ValueRef::List(l) => {
+                write!(&mut w, "[").unwrap();
+                for (j, item) in l.borrow().iter().enumerate() {
+                    print_inner(item, &mut w);
+                    if j < l.borrow().len() - 1 {
+                        write!(&mut w, ", ").unwrap();
                     }
                 }
-                ValueInner::Map(m) => {
-                    write!(&mut w, "{{").unwrap();
-                    let map = &m.borrow().inner;
-                    for (j, (key, value)) in map.iter().enumerate() {
-                        write!(&mut w, "{}: ", key).unwrap();
-                        print_inner(value, &mut w);
-                        if j < map.len() - 1 {
-                            write!(&mut w, ", ").unwrap();
-                        }
+            }
+            ValueRef::Map(m) => {
+                write!(&mut w, "{{").unwrap();
+                let map = &m.borrow().inner;
+                for (j, (key, value)) in map.iter().enumerate() {
+                    write!(&mut w, "{}: ", key).unwrap();
+                    print_inner(value, &mut w);
+                    if j < map.len() - 1 {
+                        write!(&mut w, ", ").unwrap();
                     }
-                    write!(&mut w, "}}").unwrap();
                 }
-            },
+                write!(&mut w, "}}").unwrap();
+            }
         }
         if i < args.len() - 1 {
             write!(&mut w, " ").unwrap();
