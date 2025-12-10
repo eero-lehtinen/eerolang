@@ -101,6 +101,8 @@ pub enum OpCode {
     Neq,
     Incr,
     CallBuiltin,
+    SaveRegs,
+    RestoreRegs,
     Jump,
     JumpAddr,
     JumpIfZero,
@@ -194,6 +196,14 @@ impl Inst {
         Self::new(OpCode::CallBuiltin, dst.raw(), func, arg_count as u32)
     }
 
+    pub fn save_regs() -> Self {
+        Self::new(OpCode::SaveRegs, 0, 0, 0)
+    }
+
+    pub fn restore_regs() -> Self {
+        Self::new(OpCode::RestoreRegs, 0, 0, 0)
+    }
+
     pub fn jump(target: u32) -> Self {
         Self::new(OpCode::Jump, target, 0, 0)
     }
@@ -278,6 +288,8 @@ impl Display for Inst {
                 self.args.src1,
                 self.args.src2
             )?,
+            OpCode::SaveRegs => {}
+            OpCode::RestoreRegs => {}
             OpCode::Jump => write!(f, "{:<5}", self.args.dst)?,
             OpCode::JumpAddr => write!(f, "{}", Addr::from_raw(self.args.dst))?,
             OpCode::JumpIfZero => {
@@ -290,7 +302,7 @@ impl Display for Inst {
 }
 
 pub const ARG_REG_START: u32 = 0;
-pub const ARG_REG_COUNT: u32 = 2 << 5;
+pub const ARG_REG_COUNT: u32 = 8;
 const fn reg(n: u32) -> Addr {
     Addr::abs(ARG_REG_START + ARG_REG_COUNT + n)
 }
@@ -299,7 +311,7 @@ pub const RESULT_REG2: Addr = reg(1);
 pub const SUCCESS_FLAG_REG: Addr = reg(2);
 pub const FN_CALL_RETURN_ADDR_REG: Addr = reg(3);
 pub const FN_RETURN_VALUE_REG: Addr = reg(4);
-pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 10;
+pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 3;
 pub const STACK_SIZE: u32 = 2 << 12;
 
 pub struct Compilation<'a> {
@@ -556,15 +568,15 @@ impl<'a> Compilation<'a> {
             };
         }
 
-        self.compile_set_function_args(args, ctx);
-
-        if let Some((_, func_index, args_req)) = self.builtins.get(name) {
+        if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
             }
 
+            self.compile_set_function_args(args, ctx);
+
             self.push_instruction(
-                Inst::call_builtin(dst, *func_index as u32, args.len() as u8),
+                Inst::call_builtin(dst, func_index as u32, args.len() as u8),
                 node,
             );
         } else if let Some(&(fn_start_ip, args_req)) = self.functions.get(name) {
@@ -572,14 +584,17 @@ impl<'a> Compilation<'a> {
                 unexpected_args!(args_req);
             }
 
+            self.compile_set_function_args(args, ctx);
+
             // Store return address (placeholder)
             let load_ret_addr_ip = self.cur_inst_ptr();
             self.push_instruction(Inst::nop(), node);
 
             // Store temporaries to survive the function call.
-            self.push_instruction(Inst::add_stack_pointer(2), node);
-            self.push_instruction(Inst::load_addr(Addr::stack(1), RESULT_REG1), node);
-            self.push_instruction(Inst::load_addr(Addr::stack(0), RESULT_REG2), node);
+            self.push_instruction(Inst::save_regs(), node);
+            // self.push_instruction(Inst::add_stack_pointer(2), node);
+            // self.push_instruction(Inst::load_addr(Addr::stack(1), RESULT_REG1), node);
+            // self.push_instruction(Inst::load_addr(Addr::stack(0), RESULT_REG2), node);
 
             // Jump to the function.
             self.push_instruction(Inst::jump(fn_start_ip), node);

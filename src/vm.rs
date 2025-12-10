@@ -207,6 +207,22 @@ impl<'a> Vm<'a> {
                     let dst = Addr::from_raw(args.dst);
                     self.incr(dst);
                 }
+                OpCode::SaveRegs => {
+                    trace!("Save registers to stack");
+                    for reg in 0..RESERVED_REGS {
+                        let value = self.mem_get(Addr::abs(reg)).clone();
+                        self.stack_ptr += 1;
+                        self.mem_set(Addr::stack(0), value);
+                    }
+                }
+                OpCode::RestoreRegs => {
+                    trace!("Restore registers from stack");
+                    for reg in (0..RESERVED_REGS).rev() {
+                        let value = self.mem_get(Addr::stack(0)).clone();
+                        self.stack_ptr -= 1;
+                        self.mem_set(Addr::abs(reg), value);
+                    }
+                }
                 OpCode::Jump => {
                     let target = args.dst;
                     trace!("Jump from {} to {}", self.inst_ptr, target);
