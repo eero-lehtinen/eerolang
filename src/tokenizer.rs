@@ -156,169 +156,11 @@ impl Operator {
     }
 }
 
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// pub enum MapKey {
-//     Integer(i64),
-//     String(Rc<String>),
-// }
-
-// impl From<&MapKey> for OldValue {
-//     fn from(value: &MapKey) -> Self {
-//         match value {
-//             MapKey::Integer(i) => OldValue::Integer(*i),
-//             MapKey::String(s) => OldValue::String(s.clone()),
-//         }
-//     }
-// }
-//
-// impl TryFrom<&OldValue> for MapKey {
-//     type Error = ();
-//
-//     fn try_from(value: &OldValue) -> Result<Self, Self::Error> {
-//         match value {
-//             OldValue::Integer(i) => Ok(MapKey::Integer(*i)),
-//             OldValue::String(s) => Ok(MapKey::String(s.clone())),
-//             _ => Err(()),
-//         }
-//     }
-// }
-
-// impl MapKey {
-//     pub fn dbg_display(&self) -> String {
-//         OldValue::from(self).dbg_display()
-//     }
-// }
-//
-// #[derive(Debug, Clone)]
-// pub struct MapValue {
-//     pub inner: HashMap<MapKey, OldValue>,
-//     // Created on demand for iteration
-//     pub iteration_keys: Rc<RefCell<Vec<OldValue>>>,
-// }
-//
-// impl PartialEq for MapValue {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.inner == other.inner
-//     }
-// }
-//
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum OldValue {
-//     Integer(i64),
-//     Float(f64),
-//     String(Rc<String>),
-//     List(Rc<RefCell<Vec<OldValue>>>),
-//     Map(Rc<RefCell<MapValue>>),
-//     Range(Box<Range>),
-// }
-//
-// impl OldValue {
-//     pub fn dbg_display(&self) -> String {
-//         match self {
-//             OldValue::Integer(i) => format!("int {}", i),
-//             OldValue::Float(f) => format!("float {}", f),
-//             OldValue::String(s) => {
-//                 let s = if s.len() <= 6 {
-//                     s.to_string()
-//                 } else {
-//                     format!("{}...", &s[..6])
-//                 };
-//                 let s = s.replace("\n", "\\n");
-//                 format!("string \"{}\"", s)
-//             }
-//             OldValue::List(v) => {
-//                 format!("list {}", dbg_display(&v.borrow()))
-//             }
-//             OldValue::Map(m) => {
-//                 let map = m.borrow();
-//                 let items = map
-//                     .inner
-//                     .iter()
-//                     .take(2)
-//                     .map(|(k, v)| format!("{}: {}", k.dbg_display(), v.dbg_display()))
-//                     .collect::<Vec<String>>()
-//                     .join(", ");
-//                 if map.inner.len() > 2 {
-//                     format!("map {{{}, ...}}", items)
-//                 } else {
-//                     format!("map {{{}}}", items)
-//                 }
-//             }
-//             OldValue::Range(r) => format!("range {}, {}", r.start, r.end),
-//         }
-//     }
-//
-//     #[inline]
-//     pub fn float_promoted(&self) -> Option<f64> {
-//         Some(match self {
-//             OldValue::Integer(i) => *i as f64,
-//             OldValue::Float(f) => *f,
-//             _ => return None,
-//         })
-//     }
-// }
-
-// impl From<i64> for OldValue {
-//     fn from(value: i64) -> Self {
-//         OldValue::Integer(value)
-//     }
-// }
-//
-// impl From<i32> for OldValue {
-//     fn from(value: i32) -> Self {
-//         OldValue::Integer(value as i64)
-//     }
-// }
-//
-// impl From<bool> for OldValue {
-//     fn from(value: bool) -> Self {
-//         OldValue::Integer(i64::from(value))
-//     }
-// }
-//
-// impl From<f64> for OldValue {
-//     fn from(value: f64) -> Self {
-//         OldValue::Float(value)
-//     }
-// }
-//
-// impl From<String> for OldValue {
-//     fn from(value: String) -> Self {
-//         OldValue::String(Rc::new(value))
-//     }
-// }
-//
-// impl From<&str> for OldValue {
-//     fn from(value: &str) -> Self {
-//         OldValue::String(Rc::new(value.to_string()))
-//     }
-// }
-//
-// impl From<Vec<OldValue>> for OldValue {
-//     fn from(value: Vec<OldValue>) -> Self {
-//         OldValue::List(Rc::new(RefCell::new(value)))
-//     }
-// }
-//
-
-//
-// pub fn dbg_display(values: &[OldValue]) -> String {
-//     if values.is_empty() {
-//         "[]".to_string()
-//     } else {
-//         let items = values
-//             .iter()
-//             .take(3)
-//             .map(|item| item.dbg_display())
-//             .collect::<Vec<String>>()
-//             .join(", ");
-//         if values.len() > 3 {
-//             format!("[{}, ...]", items)
-//         } else {
-//             format!("[{}]", items)
-//         }
-//     }
-// }
+impl Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.dbg_display())
+    }
+}
 
 pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
     SOURCE
@@ -474,12 +316,8 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     }
                     escape = false;
                 }
-                todo!();
-                // tok!(
-                //     tbuf.len(),
-                //     TokenKind::Literal(OldValue::String(tbuf.clone().into()))
-                // );
-                // tbuf.clear();
+                tok!(tbuf.len(), TokenKind::Literal(Value::string(tbuf.clone())));
+                tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
                 let mut byte_end_pos = byte_pos;

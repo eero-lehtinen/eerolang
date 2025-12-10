@@ -61,7 +61,7 @@ impl Value {
         }
     }
 
-    fn rc(rc: Rc<ValueInner>) -> Self {
+    pub fn rc(rc: Rc<ValueInner>) -> Self {
         debug_assert!(
             mem::align_of::<ValueInner>() > 1,
             "Type T must have alignment > 1"
@@ -366,6 +366,11 @@ impl std::fmt::Debug for Value {
                         write!(f, ", ")?;
                     }
                     write!(f, "{:?}", val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
                 }
                 write!(f, "])")
             }
@@ -376,6 +381,11 @@ impl std::fmt::Debug for Value {
                         write!(f, ", ")?;
                     }
                     write!(f, "{:?}: {:?}", key, val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
                 }
                 write!(f, "}}")
             }
@@ -399,6 +409,11 @@ impl std::fmt::Display for Value {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
                 }
                 write!(f, "]")
             }
@@ -409,6 +424,11 @@ impl std::fmt::Display for Value {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: {}", key, val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
                 }
                 write!(f, "}}")
             }
@@ -418,9 +438,13 @@ impl std::fmt::Display for Value {
 }
 
 pub fn type_display(values: &[Value]) -> String {
-    values
-        .iter()
-        .map(|item| format!("{}", item))
-        .collect::<Vec<String>>()
-        .join(", ")
+    let tstr = |value: &Value| match value.as_value_ref() {
+        ValueRef::Smi(_) => "int",
+        ValueRef::Float(_) => "float",
+        ValueRef::Range(_, _) => "range",
+        ValueRef::String(_) => "str",
+        ValueRef::List(_) => "list",
+        ValueRef::Map(_) => "map",
+    };
+    values.iter().map(tstr).collect::<Vec<&str>>().join(", ")
 }

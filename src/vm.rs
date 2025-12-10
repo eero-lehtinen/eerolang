@@ -305,13 +305,7 @@ impl<'a> Vm<'a> {
             "Regs: {}",
             (RESULT_REG1.get() as u32..=FN_RETURN_VALUE_REG.get() as u32)
                 .chain(ARG_REG_START..ARG_REG_START + 6)
-                .map(|addr| {
-                    format!(
-                        "{}={}",
-                        Addr::abs(addr),
-                        self.mem_get(Addr::abs(addr)).dbg_display()
-                    )
-                })
+                .map(|addr| { format!("{}= {}", Addr::abs(addr), self.mem_get(Addr::abs(addr))) })
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -403,7 +397,7 @@ impl<'a> Vm<'a> {
                 if index < 0 || index >= list.len() as i64 {
                     None
                 } else {
-                    Some(list[index as usize].clone())
+                    Some(Value::int(index))
                 }
             }
             ValueRef::Range(start, end) => {

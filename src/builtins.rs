@@ -7,7 +7,7 @@ use crate::value::{Value, ValueRef, type_display};
 macro_rules! arg_bail {
     ($expected:expr, $args:expr) => {{
         return Err(format!(
-            "Expects ({}), got {}",
+            "Expects ({}), got ({})",
             $expected,
             type_display($args)
         ));
