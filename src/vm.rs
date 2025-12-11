@@ -6,8 +6,9 @@ use crate::{
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
     compiler::{
-        ARG_REG_START, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, OpCode, RESERVED_REGS,
-        RESULT_REG1, STACK_SIZE, SUCCESS_FLAG_REG, binary_op_err, is_zero,
+        ARG_REG_START, ARG_REGS, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, MEMORY_SIZE, OpCode,
+        REGS_TO_STORE_ON_FN_CALL, RESERVED_REGS, RESULT_REG1, SUCCESS_FLAG_REG, binary_op_err,
+        is_zero,
     },
     tokenizer::{Operator, Token, find_source_char_col, report_source_pos},
     value::{Map, Value, ValueRef},
@@ -21,6 +22,7 @@ pub struct Vm<'a> {
     inst_ptr: usize,
     stack_ptr: usize,
     sp_start: usize,
+    stack_end: usize,
     memory: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
 }
@@ -32,10 +34,7 @@ fn placeholder_func(_: &[Value]) -> Result<Value, String> {
 #[allow(dead_code)]
 impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
-        let mut memory = vec![
-            Value::default();
-            RESERVED_REGS as usize + ctx.literals.len() + STACK_SIZE as usize
-        ];
+        let mut memory = vec![Value::default(); MEMORY_SIZE as usize];
         for (lit_value, lit_reg) in ctx.literals.iter() {
             memory[lit_reg.get()] = lit_value.clone();
         }
@@ -45,7 +44,7 @@ impl<'a> Vm<'a> {
             builtins[*index] = (*func, name.clone());
         }
 
-        let sp = RESERVED_REGS as usize + ctx.literals.len();
+        let sp = RESERVED_REGS as usize;
 
         Vm {
             instructions: ctx.instructions,
@@ -56,6 +55,7 @@ impl<'a> Vm<'a> {
             builtins,
             stack_ptr: sp,
             sp_start: sp,
+            stack_end: MEMORY_SIZE as usize - ctx.literals.len() - 1,
         }
     }
 
@@ -80,7 +80,11 @@ impl<'a> Vm<'a> {
             //     offset,
             //     self.stack_ptr - offset as usize
             // );
-            debug_assert!(self.stack_ptr - offset >= self.sp_start);
+
+            debug_assert!(
+                self.stack_ptr - offset >= RESERVED_REGS as usize
+                    && self.stack_ptr - offset < self.stack_end
+            );
             self.stack_ptr - offset
         } else {
             addr.get()
@@ -103,6 +107,19 @@ impl<'a> Vm<'a> {
         // SAFETY: Look up ^
         unsafe {
             *self.memory.get_unchecked_mut(pos) = value;
+        }
+    }
+
+    fn mem_swap(&mut self, addr1: Addr, addr2: Addr) {
+        let pos1 = self.mem(addr1);
+        let pos2 = self.mem(addr2);
+        debug_assert!(pos1 < self.memory.len());
+        debug_assert!(pos2 < self.memory.len());
+        // SAFETY: Look up ^
+        unsafe {
+            let ptr1 = self.memory.get_unchecked_mut(pos1) as *mut Value;
+            let ptr2 = self.memory.get_unchecked_mut(pos2) as *mut Value;
+            std::ptr::swap(ptr1, ptr2);
         }
     }
 
@@ -198,29 +215,39 @@ impl<'a> Vm<'a> {
                 OpCode::Eq => bop!(eq, args, Operator::Eq),
                 OpCode::Neq => bop!(neq, args, Operator::Neq),
                 OpCode::CallBuiltin => {
-                    let dst = Addr::from_raw(args.dst);
-                    let func = args.src1;
-                    let arg_count = args.src2 as u8;
-                    self.call_builtin(dst, func, arg_count);
+                    let func = args.dst;
+                    let arg_count = args.src1 as u8;
+                    self.call_builtin(func, arg_count);
                 }
                 OpCode::Incr => {
                     let dst = Addr::from_raw(args.dst);
                     self.incr(dst);
                 }
                 OpCode::SaveRegs => {
-                    trace!("Save registers to stack");
-                    for reg in 0..RESERVED_REGS {
-                        let value = self.mem_get(Addr::abs(reg)).clone();
+                    let arg_count = args.dst;
+                    trace!("Save {} args and temporary registers to stack", arg_count);
+                    for reg_addr in REGS_TO_STORE_ON_FN_CALL {
                         self.stack_ptr += 1;
-                        self.mem_set(Addr::stack(0), value);
+                        self.mem_swap(*reg_addr, Addr::stack(0));
+                    }
+                    for arg_addr in ARG_REGS.iter().take(arg_count as usize) {
+                        self.stack_ptr += 1;
+                        self.mem_swap(*arg_addr, Addr::stack(0));
                     }
                 }
                 OpCode::RestoreRegs => {
-                    trace!("Restore registers from stack");
-                    for reg in (0..RESERVED_REGS).rev() {
-                        let value = self.mem_get(Addr::stack(0)).clone();
+                    let arg_count = args.dst;
+                    trace!(
+                        "Restore {} args and temporary registers from stack",
+                        arg_count
+                    );
+                    for arg_addr in ARG_REGS.iter().take(arg_count as usize).rev() {
+                        self.mem_swap(*arg_addr, Addr::stack(0));
                         self.stack_ptr -= 1;
-                        self.mem_set(Addr::abs(reg), value);
+                    }
+                    for reg_addr in REGS_TO_STORE_ON_FN_CALL.iter().rev() {
+                        self.mem_swap(*reg_addr, Addr::stack(0));
+                        self.stack_ptr -= 1;
                     }
                 }
                 OpCode::Jump => {
@@ -451,10 +478,10 @@ impl<'a> Vm<'a> {
         );
     }
 
-    fn call_builtin(&mut self, dst: Addr, func: u32, arg_count: u8) {
+    fn call_builtin(&mut self, func: u32, arg_count: u8) {
         trace!(
             "Call builtin function {} with {} args, store result in {}",
-            self.builtins[func as usize].1, arg_count, dst
+            self.builtins[func as usize].1, arg_count, FN_RETURN_VALUE_REG
         );
         debug_assert!((func as usize) < self.builtins.len());
         // SAFETY: non-existent functions should be hard to call
@@ -465,7 +492,10 @@ impl<'a> Vm<'a> {
             Ok(v) => v,
             Err(e) => self.fatal(&format!("Error in function call: {}", e)),
         };
-        self.mem_set(dst, result);
-        trace!("  -> result: {:?}", self.mem_get(dst).dbg_display());
+        self.mem_set(FN_RETURN_VALUE_REG, result);
+        trace!(
+            "  -> result: {:?}",
+            self.mem_get(FN_RETURN_VALUE_REG).dbg_display()
+        );
     }
 }

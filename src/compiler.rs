@@ -192,16 +192,16 @@ impl Inst {
         Self::new(OpCode::Incr, dst.raw(), 0, 0)
     }
 
-    pub fn call_builtin(dst: Addr, func: u32, arg_count: u8) -> Self {
-        Self::new(OpCode::CallBuiltin, dst.raw(), func, arg_count as u32)
+    pub fn call_builtin(func: u32, arg_count: u32) -> Self {
+        Self::new(OpCode::CallBuiltin, func, arg_count, 0)
     }
 
-    pub fn save_regs() -> Self {
-        Self::new(OpCode::SaveRegs, 0, 0, 0)
+    pub fn save_regs(arg_count: u32) -> Self {
+        Self::new(OpCode::SaveRegs, arg_count, 0, 0)
     }
 
-    pub fn restore_regs() -> Self {
-        Self::new(OpCode::RestoreRegs, 0, 0, 0)
+    pub fn restore_regs(arg_count: u32) -> Self {
+        Self::new(OpCode::RestoreRegs, arg_count, 0, 0)
     }
 
     pub fn jump(target: u32) -> Self {
@@ -302,7 +302,18 @@ impl Display for Inst {
 }
 
 pub const ARG_REG_START: u32 = 0;
-pub const ARG_REG_COUNT: u32 = 8;
+pub const ARG_REG_COUNT: u32 = 2 << 6;
+
+pub const ARG_REGS: &[Addr] = &{
+    let mut args = [Addr::abs(0); ARG_REG_COUNT as usize];
+    let mut i = 0;
+    while i < ARG_REG_COUNT {
+        args[i as usize] = Addr::abs(ARG_REG_START + i);
+        i += 1;
+    }
+    args
+};
+
 const fn reg(n: u32) -> Addr {
     Addr::abs(ARG_REG_START + ARG_REG_COUNT + n)
 }
@@ -310,9 +321,24 @@ pub const RESULT_REG1: Addr = reg(0);
 pub const RESULT_REG2: Addr = reg(1);
 pub const SUCCESS_FLAG_REG: Addr = reg(2);
 pub const FN_CALL_RETURN_ADDR_REG: Addr = reg(3);
+
+pub const REGS_TO_STORE_ON_FN_CALL: &[Addr] = &[
+    RESULT_REG1,
+    RESULT_REG2,
+    SUCCESS_FLAG_REG,
+    FN_CALL_RETURN_ADDR_REG,
+];
+
 pub const FN_RETURN_VALUE_REG: Addr = reg(4);
-pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 3;
-pub const STACK_SIZE: u32 = 2 << 12;
+
+pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 5;
+pub const MEMORY_SIZE: u32 = 2 << 13;
+
+#[derive(Debug, Clone)]
+pub struct ScopeData<'a> {
+    pub var_decls: Vec<(&'a str, usize)>,
+    pub frame_ptr: u32,
+}
 
 pub struct Compilation<'a> {
     pub instructions: Vec<Inst>,
@@ -321,7 +347,7 @@ pub struct Compilation<'a> {
     pub functions: HashMap<String, (u32, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
-    pub scope_var_decls: Vec<Vec<(&'a str, usize)>>,
+    pub scopes: Vec<ScopeData<'a>>,
     cur_stack_ptr_offset: u32,
 }
 
@@ -338,8 +364,8 @@ impl<'a> Compilation<'a> {
             functions: HashMap::new(),
             tokens,
             ip_to_token: Vec::new(),
-            scope_var_decls: Vec::new(),
-            cur_stack_ptr_offset: 0,
+            scopes: Vec::new(),
+            cur_stack_ptr_offset: RESERVED_REGS,
         }
     }
 
@@ -357,14 +383,12 @@ impl<'a> Compilation<'a> {
     }
 
     fn variable_offset(&mut self, name: &str, node: &AstNode) -> Addr {
-        trace!("{:?}", self.scope_var_decls);
+        trace!("{:?}", self.scopes);
 
         let pos = self.tokens[node.token_idx].byte_pos_start;
 
-        let mut frame_ptr = self.cur_stack_ptr_offset;
-        for decls in self.scope_var_decls.iter().rev() {
-            frame_ptr -= decls.len() as u32;
-            for (i, (dname, dpos)) in decls.iter().enumerate() {
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
+            for (j, (dname, dpos)) in scope.var_decls.iter().enumerate() {
                 if *dname == name {
                     if *dpos > pos {
                         self.fatal(
@@ -372,21 +396,26 @@ impl<'a> Compilation<'a> {
                             node,
                         );
                     }
-                    let offset = self.cur_stack_ptr_offset - frame_ptr - i as u32 - 1;
-                    trace!("variable offset: {} for variable '{}'", offset, name);
-                    return Addr::stack(offset);
+                    // TODO: Absolute offsets can and should be used for top level variables, because
+                    // recursive functions need to access them correctly.
+                    if i == 0 {
+                        let offset = scope.frame_ptr + j as u32;
+                        trace!("Absolute variable address: {} for '{}'", offset, name);
+                        return Addr::abs(offset);
+                    } else {
+                        let offset = self.cur_stack_ptr_offset - scope.frame_ptr - j as u32 - 1;
+                        trace!("Stack variable address: {} for '{}'", offset, name);
+                        return Addr::stack(offset);
+                    }
                 }
             }
         }
 
-        self.fatal(
-            &format!("Variable '{}' used before declaration", name),
-            node,
-        );
+        self.fatal(&format!("Variable '{}' not declared", name), node);
     }
 
     fn make_literal(&mut self, value: &Value) -> Addr {
-        let addr = Addr::abs(self.literals.len() as u32 + RESERVED_REGS);
+        let addr = Addr::abs(MEMORY_SIZE - 1 - self.literals.len() as u32);
         self.literals.push((value.clone(), addr));
         addr
     }
@@ -472,13 +501,6 @@ impl<'a> Compilation<'a> {
 
         let mut fn_ctx = self.block_start(body, ctx, Some(node), None);
 
-        // Store return address in a stack variable.
-        let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
-        self.push_instruction(
-            Inst::load_addr(return_addr_var_addr, FN_CALL_RETURN_ADDR_REG),
-            node,
-        );
-
         // Load arguments from argument registers to stack variables
         for (arg_idx, arg) in args.iter().enumerate() {
             let arg_name = arg.get_var_name().expect("Parsed correctly");
@@ -492,15 +514,8 @@ impl<'a> Compilation<'a> {
         // Default return value is 1
         self.push_instruction(Inst::load_int(FN_RETURN_VALUE_REG, 1), node);
 
-        // Store return address back to the return address register.
-        // TODO: This might not be needed if we clean up the stack in the caller.
-        self.push_instruction(
-            Inst::load_addr(FN_CALL_RETURN_ADDR_REG, return_addr_var_addr),
-            node,
-        );
-
         // Clean up stack frame.
-        self.block_end(body, &fn_ctx);
+        self.block_end(body);
 
         // Jump back to return address.
         self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
@@ -517,14 +532,6 @@ impl<'a> Compilation<'a> {
         if expr_addr != FN_RETURN_VALUE_REG {
             self.push_instruction(Inst::load_addr(FN_RETURN_VALUE_REG, expr_addr), node);
         }
-
-        // Store return address back to the return address register.
-        // TODO: This might not be needed if we clean up the stack in the caller.
-        let return_addr_var_addr = self.variable_offset(Self::FN_CALL_RETURN_ADDR_VAR, node);
-        self.push_instruction(
-            Inst::load_addr(FN_CALL_RETURN_ADDR_REG, return_addr_var_addr),
-            node,
-        );
 
         // Clean up stack frame.
         let sub_sp = self.cur_stack_ptr_offset - ctx.fn_frame_ptr;
@@ -568,15 +575,21 @@ impl<'a> Compilation<'a> {
             };
         }
 
+        // Store temporaries to survive the function call.
+        let save_args_count = args.len() as u32;
+        let save_regs_count = REGS_TO_STORE_ON_FN_CALL.len() as u32;
+        self.push_instruction(Inst::save_regs(save_args_count), node);
+        self.cur_stack_ptr_offset += save_regs_count + save_args_count;
+
+        self.compile_set_function_args(args, ctx);
+
         if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
             }
 
-            self.compile_set_function_args(args, ctx);
-
             self.push_instruction(
-                Inst::call_builtin(dst, func_index as u32, args.len() as u8),
+                Inst::call_builtin(func_index as u32, args.len() as u32),
                 node,
             );
         } else if let Some(&(fn_start_ip, args_req)) = self.functions.get(name) {
@@ -584,35 +597,26 @@ impl<'a> Compilation<'a> {
                 unexpected_args!(args_req);
             }
 
-            self.compile_set_function_args(args, ctx);
-
             // Store return address (placeholder)
             let load_ret_addr_ip = self.cur_inst_ptr();
             self.push_instruction(Inst::nop(), node);
 
-            // Store temporaries to survive the function call.
-            self.push_instruction(Inst::save_regs(), node);
-            // self.push_instruction(Inst::add_stack_pointer(2), node);
-            // self.push_instruction(Inst::load_addr(Addr::stack(1), RESULT_REG1), node);
-            // self.push_instruction(Inst::load_addr(Addr::stack(0), RESULT_REG2), node);
-
             // Jump to the function.
             self.push_instruction(Inst::jump(fn_start_ip), node);
 
-            // Store return address (placeholder)
+            // Store return address now that we know it.
             *self.inst_mut(load_ret_addr_ip) =
                 Inst::load_int(FN_CALL_RETURN_ADDR_REG, self.cur_inst_ptr() as i32);
-
-            // Restore temporaries after the function call.
-            self.push_instruction(Inst::load_addr(RESULT_REG2, Addr::stack(0)), node);
-            self.push_instruction(Inst::load_addr(RESULT_REG1, Addr::stack(1)), node);
-            self.push_instruction(Inst::sub_stack_pointer(2), node);
-
-            // Load return value to the correct location.
-            self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
         } else {
             self.fatal(&format!("Undefined function: {}", name), node);
         }
+
+        // Restore temporaries after the function call.
+        self.push_instruction(Inst::restore_regs(save_args_count), node);
+        self.cur_stack_ptr_offset -= save_regs_count + save_args_count;
+
+        // Load return value to the correct location.
+        self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
     }
 
     fn compile_for_loop(&mut self, node: &'a AstNode, ctx: &Context) {
@@ -620,7 +624,7 @@ impl<'a> Compilation<'a> {
             unreachable!();
         };
         let mut for_ctx = self.block_start(body, ctx, None, Some(node));
-        for_ctx.loop_frame_ptr = ctx.block_frame_ptr;
+        for_ctx.loop_frame_ptr = self.scopes.last().unwrap().frame_ptr;
         for_ctx.loop_stack_ptr = self.cur_stack_ptr_offset;
 
         let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
@@ -677,7 +681,7 @@ impl<'a> Compilation<'a> {
                 .set_jump_target(for_load_key_ip);
         }
 
-        self.block_end(body, &for_ctx);
+        self.block_end(body);
 
         let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
 
@@ -757,9 +761,6 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    // Temporary variable to store function call return address. Needed for nested function calls.
-    const FN_CALL_RETURN_ADDR_VAR: &'static str = "__fn_call_return_addr";
-
     // If the iterable is an expression, it needs to be stored somwhere.
     const FOR_ITERABLE_TEMP_VAR: &'static str = "__for_iterable_temp";
     // Index needs to be stored somewhere.
@@ -797,9 +798,6 @@ impl<'a> Compilation<'a> {
             let AstNodeKind::FunctionDefinition(_, args, _) = &node.kind else {
                 panic!("Should be parsed correctly");
             };
-
-            let token = &self.tokens[node.token_idx];
-            cur_scope_var_decls.push((Self::FN_CALL_RETURN_ADDR_VAR, token.byte_pos_start));
 
             for arg in args {
                 add_decl_node!(arg);
@@ -845,10 +843,13 @@ impl<'a> Compilation<'a> {
             self.push_instruction(Inst::add_stack_pointer(add_sp), node);
             self.cur_stack_ptr_offset += add_sp;
         }
-        self.scope_var_decls.push(cur_scope_var_decls);
+
+        self.scopes.push(ScopeData {
+            var_decls: cur_scope_var_decls.clone(),
+            frame_ptr,
+        });
 
         let mut ctx = prev_ctx.clone();
-        ctx.block_frame_ptr = frame_ptr;
 
         if fn_node.is_some() {
             ctx.fn_frame_ptr = frame_ptr;
@@ -862,19 +863,22 @@ impl<'a> Compilation<'a> {
         ctx
     }
 
-    fn block_end(&mut self, node: &'a AstNode, ctx: &Context) {
-        let sub_sp = self.cur_stack_ptr_offset - ctx.block_frame_ptr;
+    fn block_end(&mut self, node: &'a AstNode) {
+        let scope = self
+            .scopes
+            .pop()
+            .expect("Scope should exist when ending block");
+        let sub_sp = self.cur_stack_ptr_offset - scope.frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
             self.cur_stack_ptr_offset -= sub_sp;
         }
-        self.scope_var_decls.pop();
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode, prev_ctx: &Context) {
         let mut ctx = self.block_start(block, prev_ctx, None, None);
         self.compile_block(block, &mut ctx);
-        self.block_end(block, &ctx);
+        self.block_end(block);
     }
 
     fn compile_block(&mut self, block: &'a AstNode, ctx: &mut Context) {
@@ -903,7 +907,6 @@ impl<'a> Compilation<'a> {
 
 #[derive(Clone, Debug, Default)]
 struct Context {
-    block_frame_ptr: u32,
     fn_frame_ptr: u32,
     loop_frame_ptr: u32,
     loop_stack_ptr: u32,
@@ -916,7 +919,7 @@ pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
     let mut ctx = c.block_start(block, &Context::default(), None, None);
     c.compile_block(block, &mut ctx);
-    c.block_end(block, &ctx);
+    c.block_end(block);
     for (i, ins) in c.instructions.iter().enumerate() {
         trace!("{:4}: {}", i, ins);
     }
