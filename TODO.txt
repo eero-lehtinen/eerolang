@@ -1,1 +1,2 @@
-Show syntax highlighted stuff in error messages
+- Fix argument registers and return address register getting overwritten in nested calls
+- Show syntax highlighted stuff in error messages

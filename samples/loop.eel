@@ -1,0 +1,20 @@
+print("Begin loop sample")
+
+for i in range(10) {
+    print(i)
+    if i > 4 {
+        break
+    }
+}
+
+print("After first loop")
+
+for j in range(5) {
+    if mod(j, 2) == 0 {
+        continue
+    }
+    print("Odd number:", j)
+}
+
+
+print("End loop sample")

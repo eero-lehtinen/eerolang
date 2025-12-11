@@ -10,8 +10,8 @@ x = 10 + 5 * 2 - 3 / 1
 # Printing
 print("The value of x is", x)
 
-# Looping
-for i in range(5) {
+for i in range(10) {
+    print("i is", i)
     if i > 4 {
         break
     }
@@ -49,7 +49,7 @@ for key, value in map {
 print("Different values:", x, list, map)
 
 # Sleeps for given milliseconds
-sleep(1000)
+sleep(10)
 
 # Reads a file and returns its content as a string
 file := readfile("samples/features.eel")
