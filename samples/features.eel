@@ -85,8 +85,12 @@ exists := has(map, "three")
 remove(list, 2)
 remove(map, "two")
 
+# Clones a list or map
+clonedList := clone(list)
+
 # Gets the length of a string, list or map
 length := len(list)
+
 
 # Math
 x = mod(10, 3)

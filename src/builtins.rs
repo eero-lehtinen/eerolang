@@ -500,6 +500,41 @@ pub fn builtin_remove(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+const CLONE_ARGS: u32 = 1;
+pub fn builtin_clone(args: &[Value]) -> ProgramFnRes {
+    let [target] = args else {
+        arg_bail!("list/map", args);
+    };
+
+    match target.as_value_ref() {
+        ValueRef::List(_) => Ok(clone_impl(target)),
+        ValueRef::Map(_) => Ok(clone_impl(target)),
+        _ => arg_bail!("list/map", args),
+    }
+}
+
+fn clone_impl(value: &Value) -> Value {
+    match value.as_value_ref() {
+        ValueRef::Smi(int) => Value::smi(int),
+        ValueRef::Float(f) => Value::float(f),
+        ValueRef::String(s) => Value::string(s.to_string()),
+        ValueRef::Range(s, e) => Value::range(s, e),
+        ValueRef::List(l) => {
+            let cloned_list = l.borrow().iter().map(clone_impl).collect();
+            Value::list(cloned_list)
+        }
+        ValueRef::Map(m) => {
+            let cloned_map = m
+                .borrow()
+                .inner
+                .iter()
+                .map(|(k, v)| (k.clone(), clone_impl(v)))
+                .collect();
+            Value::map(cloned_map)
+        }
+    }
+}
+
 const LEN_ARGS: u32 = 1;
 pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     let [len] = args else {
@@ -638,6 +673,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("get", builtin_get, ArgsRequred::Exact(GET_ARGS)),
         ("has", builtin_has, ArgsRequred::Exact(HAS_ARGS)),
         ("remove", builtin_remove, ArgsRequred::Exact(REMOVE_ARGS)),
+        ("clone", builtin_clone, ArgsRequred::Exact(CLONE_ARGS)),
         ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
         ("pow", builtin_pow, ArgsRequred::Exact(POW_ARGS)),
