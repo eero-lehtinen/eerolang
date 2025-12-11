@@ -88,8 +88,12 @@ remove(map, "two")
 # Gets the length of a string, list or map
 length := len(list)
 
-# Modulus
+# Math
 x = mod(10, 3)
+x = pow(2, 3)
+x = sqrt(2)
+
+
 
 
 

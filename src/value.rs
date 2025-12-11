@@ -81,6 +81,14 @@ impl Value {
         }
     }
 
+    pub fn number(val: f64) -> Self {
+        if val.fract() == 0.0 && val >= i32::MIN as f64 && val <= i32::MAX as f64 {
+            Self::smi(val as i32)
+        } else {
+            Self::float(val)
+        }
+    }
+
     pub fn float(val: f64) -> Self {
         Self::rc(Rc::new(ValueInner::Float(val)))
     }

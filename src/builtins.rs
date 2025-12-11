@@ -537,6 +537,53 @@ pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
     Ok(Value::int(a % b))
 }
 
+const POW_ARGS: u32 = 2;
+pub fn builtin_pow(args: &[Value]) -> ProgramFnRes {
+    let [base, exponent] = args else {
+        arg_bail!("int/float, int/float", args);
+    };
+
+    let base_f = match base.as_value_ref() {
+        ValueRef::Smi(i) => i as f64,
+        ValueRef::Float(f) => f,
+        _ => arg_bail!("int/float, int/float", args),
+    };
+
+    let exponent_f = match exponent.as_value_ref() {
+        ValueRef::Smi(i) => i as f64,
+        ValueRef::Float(f) => f,
+        _ => arg_bail!("int/float, int/float", args),
+    };
+
+    let result = base_f.powf(exponent_f);
+    Ok(Value::number(result))
+}
+
+const SQRT_ARGS: u32 = 1;
+pub fn builtin_sqrt(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("int/float", args);
+    };
+
+    match arg.as_value_ref() {
+        ValueRef::Smi(i) => {
+            if i < 0 {
+                return Err("Cannot compute square root of a negative integer".to_string());
+            }
+            let result = (i as f64).sqrt();
+            Ok(Value::number(result))
+        }
+        ValueRef::Float(f) => {
+            if f < 0.0 {
+                return Err("Cannot compute square root of a negative float".to_string());
+            }
+            let result = f.sqrt();
+            Ok(Value::number(result))
+        }
+        _ => arg_bail!("int/float", args),
+    }
+}
+
 pub type ProgramFnRes = Result<Value, String>;
 pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 
@@ -593,5 +640,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("remove", builtin_remove, ArgsRequred::Exact(REMOVE_ARGS)),
         ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
+        ("pow", builtin_pow, ArgsRequred::Exact(POW_ARGS)),
+        ("sqrt", builtin_sqrt, ArgsRequred::Exact(SQRT_ARGS)),
     ]
 }
