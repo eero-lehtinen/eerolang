@@ -402,14 +402,15 @@ impl<'a> Compilation<'a> {
 
         let pos = self.tokens[node.token_idx].byte_pos_start;
 
+        let mut maybe_used_before_init = false;
         for (i, scope) in self.scopes.iter().enumerate().rev() {
             for (j, (dname, dpos)) in scope.var_decls.iter().enumerate() {
                 if *dname == name {
+                    // We found it but it is later than the usage position.
                     if *dpos > pos {
-                        self.fatal(
-                            &format!("Variable '{}' used before initialization", name),
-                            node,
-                        );
+                        // Still need to search outer scopes in case of shadowing.
+                        maybe_used_before_init = true;
+                        continue;
                     }
                     // TODO: Absolute offsets can and should be used for top level variables, because
                     // recursive functions need to access them correctly.
@@ -424,6 +425,12 @@ impl<'a> Compilation<'a> {
                     }
                 }
             }
+        }
+        if maybe_used_before_init {
+            self.fatal(
+                &format!("Variable '{}' used before initialization", name),
+                node,
+            );
         }
 
         self.fatal(&format!("Variable '{}' not declared", name), node);
