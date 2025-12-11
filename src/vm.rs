@@ -22,7 +22,7 @@ pub struct Vm<'a> {
     inst_ptr: usize,
     stack_ptr: usize,
     sp_start: usize,
-    stack_end: usize,
+    sp_end: usize,
     memory: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
 }
@@ -55,7 +55,7 @@ impl<'a> Vm<'a> {
             builtins,
             stack_ptr: sp,
             sp_start: sp,
-            stack_end: MEMORY_SIZE as usize - ctx.literals.len() - 1,
+            sp_end: MEMORY_SIZE as usize - ctx.literals.len() - 1,
         }
     }
 
@@ -83,7 +83,7 @@ impl<'a> Vm<'a> {
 
             debug_assert!(
                 self.stack_ptr - offset >= RESERVED_REGS as usize
-                    && self.stack_ptr - offset < self.stack_end
+                    && self.stack_ptr - offset < self.sp_end
             );
             self.stack_ptr - offset
         } else {
@@ -329,7 +329,7 @@ impl<'a> Vm<'a> {
     fn add_stack(&mut self, value: u32) {
         trace!("Add {} to stack pointer", value);
         self.stack_ptr += value as usize;
-        if self.stack_ptr >= self.memory.len() {
+        if self.stack_ptr >= self.sp_end {
             self.fatal(&format!(
                 "Stack overflow: stack pointer {} exceeds memory size {}",
                 self.stack_ptr,
