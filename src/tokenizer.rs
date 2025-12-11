@@ -17,6 +17,7 @@ pub enum TokenKind {
     Literal(Value),
     Ident(String),
     KeywordFor,
+    KeywordWhile,
     KeywordIn,
     KeywordIf,
     KeywordElse,
@@ -66,6 +67,7 @@ impl TokenKind {
             TokenKind::Literal(_) => colored::Color::Green,
             TokenKind::Ident(_) => colored::Color::Cyan,
             TokenKind::KeywordFor
+            | TokenKind::KeywordWhile
             | TokenKind::KeywordIn
             | TokenKind::KeywordIf
             | TokenKind::KeywordElse
@@ -91,6 +93,7 @@ impl Display for TokenKind {
             TokenKind::Literal(val) => write!(f, "{:?}", val),
             TokenKind::Ident(name) => write!(f, "ident({})", name),
             TokenKind::KeywordFor => write!(f, "for"),
+            TokenKind::KeywordWhile => write!(f, "while"),
             TokenKind::KeywordIn => write!(f, "in"),
             TokenKind::KeywordIf => write!(f, "if"),
             TokenKind::KeywordElse => write!(f, "else"),
@@ -331,6 +334,7 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                 }
                 match &source[byte_pos..byte_end_pos] {
                     "for" => tok!("for".len(), TokenKind::KeywordFor),
+                    "while" => tok!("while".len(), TokenKind::KeywordWhile),
                     "in" => tok!("in".len(), TokenKind::KeywordIn),
                     "if" => tok!("if".len(), TokenKind::KeywordIf),
                     "else" => tok!("else".len(), TokenKind::KeywordElse),

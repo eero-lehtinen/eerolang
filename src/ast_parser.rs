@@ -25,6 +25,8 @@ pub enum AstNodeKind {
         Box<AstNode>,
         Box<AstNode>,
     ),
+    /// condition, block
+    WhileLoop(Box<AstNode>, Box<AstNode>),
     /// For loop and function parameter declarations.
     Declaration(VarName),
     Continue,
@@ -195,7 +197,7 @@ fn parse_function_definition<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstN
     }
 }
 
-fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
+fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, in_function: bool) -> AstNode {
     let for_token = iter.next().unwrap();
     trace!("Parsing for loop, for token: {:?}", for_token);
     let token_idx = for_token.index;
@@ -249,11 +251,31 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstNode {
         collection_expr
     );
 
-    let body = parse_block(iter, false, true, false);
+    let body = parse_block(iter, false, true, in_function);
 
     AstNode {
         token_idx,
         kind: AstNodeKind::ForLoop(key, item, Box::new(collection_expr), body),
+    }
+}
+
+fn parse_while_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, in_function: bool) -> AstNode {
+    let while_token = iter.next().unwrap();
+    trace!("Parsing while loop, while token: {:?}", while_token);
+    let token_idx = while_token.index;
+
+    let expr = parse_expression(iter).unwrap_or_else(|| {
+        fatal(
+            "Expected condition expression after 'while'",
+            iter.peek().unwrap(),
+        );
+    });
+
+    let body = parse_block(iter, false, true, in_function);
+
+    AstNode {
+        token_idx,
+        kind: AstNodeKind::WhileLoop(Box::new(expr), body),
     }
 }
 
@@ -448,7 +470,8 @@ fn parse_statement<'a, I: TokIter<'a>>(
                 kind: AstNodeKind::Return(Box::new(expr)),
             }
         }
-        TokenKind::KeywordFor => parse_for_loop(iter),
+        TokenKind::KeywordFor => parse_for_loop(iter, in_function),
+        TokenKind::KeywordWhile => parse_while_loop(iter, in_function),
         TokenKind::KeywordIf => parse_if_statement(iter, in_loop, in_function),
         TokenKind::KeywordContinue if in_loop => {
             let continue_token = iter.next().unwrap();

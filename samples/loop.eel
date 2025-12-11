@@ -1,5 +1,7 @@
 print("Begin loop sample")
 
+print("For loop with break")
+
 for i in range(10) {
     print(i)
     if i > 4 {
@@ -7,7 +9,7 @@ for i in range(10) {
     }
 }
 
-print("After first loop")
+print("For loop with continue")
 
 for j in range(5) {
     if mod(j, 2) == 0 {
@@ -16,5 +18,26 @@ for j in range(5) {
     print("Odd number:", j)
 }
 
+print("While loop")
+
+i := 0
+while i < 5 {
+    print(i)
+    i = i + 1
+}
+
+print("While loop constant false")
+
+while 10 - 10 {
+    print("This will never print")
+    continue
+}
+
+print("While loop constant true")
+
+while 1 {
+    print("This will print once")
+    break
+}
 
 print("End loop sample")

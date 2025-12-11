@@ -513,7 +513,7 @@ impl<'a> Compilation<'a> {
         self.functions
             .insert(name.clone(), (fn_start_ip, args_required));
 
-        self.block_start(body, Some(node), None);
+        self.block_start(body, Some(node), None, false);
 
         // Load arguments from argument registers to stack variables
         for (arg_idx, arg) in args.iter().enumerate() {
@@ -633,78 +633,139 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
     }
 
-    fn compile_for_loop(&mut self, node: &'a AstNode) {
-        let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind else {
-            unreachable!();
-        };
+    fn compile_loop(&mut self, node: &'a AstNode) {
+        let (body, loop_continue_ip, loop_exit_inst_index, index_addr) =
+            if let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind {
+                self.block_start(body, None, Some(node), false);
 
-        self.block_start(body, None, Some(node));
+                let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
+                let (addr, _) = self.compile_expression(collection, iterable_addr);
+                if addr != iterable_addr {
+                    self.push_instruction(Inst::load_addr(iterable_addr, addr), collection);
+                };
 
-        let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
-        let (addr, _) = self.compile_expression(collection, iterable_addr);
-        if addr != iterable_addr {
-            self.push_instruction(Inst::load_addr(iterable_addr, addr), collection);
-        };
+                self.push_instruction(Inst::init_map_iteration_list(iterable_addr), node);
 
-        self.push_instruction(Inst::init_map_iteration_list(iterable_addr), node);
+                let index_addr = self.variable_offset(Self::FOR_INDEX_TEMP_VAR, node);
+                self.push_instruction(Inst::load_int(index_addr, 0), node);
 
-        let index_addr = self.variable_offset(Self::FOR_INDEX_TEMP_VAR, node);
-        self.push_instruction(Inst::load_int(index_addr, 0), node);
+                let loop_continue_ip = self.cur_inst_ptr();
 
-        let for_load_key_ip = self.cur_inst_ptr();
+                let (key_var_name, key_node) = if let Some(key_node) = key {
+                    (
+                        key_node.get_var_name().expect("Parsed correctly"),
+                        key_node.as_ref(),
+                    )
+                } else {
+                    (Self::FOR_KEY_TEMP_VAR, node)
+                };
+                let key_addr = self.variable_offset(key_var_name, key_node);
+                self.push_instruction(
+                    Inst::load_iteration_key(key_addr, iterable_addr, index_addr),
+                    key_node,
+                );
 
-        let (key_var_name, key_node) = if let Some(key_node) = key {
-            (
-                key_node.get_var_name().expect("Parsed correctly"),
-                key_node.as_ref(),
-            )
-        } else {
-            (Self::FOR_KEY_TEMP_VAR, node)
-        };
-        let key_addr = self.variable_offset(key_var_name, key_node);
-        self.push_instruction(
-            Inst::load_iteration_key(key_addr, iterable_addr, index_addr),
-            key_node,
-        );
+                let loop_exit_inst_index = self.cur_inst_ptr();
+                // Placeholder
+                self.push_instruction(Inst::jump_if_zero(0, SUCCESS_FLAG_REG), node);
 
-        let for_exit_jump_ip = self.cur_inst_ptr();
-        // Placeholder
-        self.push_instruction(Inst::jump_if_zero(0, SUCCESS_FLAG_REG), node);
+                if let Some(item_node) = item {
+                    let item_var_name = item_node.get_var_name().expect("Parsed correctly");
+                    let item_addr = self.variable_offset(item_var_name, item_node);
+                    self.push_instruction(
+                        Inst::load_collection_item(item_addr, iterable_addr, key_addr),
+                        item_node,
+                    );
+                }
 
-        if let Some(item_node) = item {
-            let item_var_name = item_node.get_var_name().expect("Parsed correctly");
-            let item_addr = self.variable_offset(item_var_name, item_node);
-            self.push_instruction(
-                Inst::load_collection_item(item_addr, iterable_addr, key_addr),
-                item_node,
-            );
+                self.compile_block(body);
+
+                self.push_instruction(Inst::incr(index_addr), node);
+
+                (
+                    body,
+                    Some(loop_continue_ip),
+                    Some(loop_exit_inst_index),
+                    Some(index_addr),
+                )
+            } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
+                self.block_start(body, None, None, true);
+
+                let loop_continue_ip = self.cur_inst_ptr();
+
+                let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1);
+
+                let const_cond_true = cond_val.map(|v| {
+                    !is_zero(&v).unwrap_or_else(|| {
+                        self.fatal(
+                            "Condition expression in while loop must be an integer",
+                            condition,
+                        )
+                    })
+                });
+
+                // If we are able to do constant folding, then the expression compiled into nothing
+                // and we can just not compile the body if it was false.
+                if let Some(const_cond_true) = const_cond_true {
+                    if const_cond_true {
+                        self.compile_block(body);
+
+                        (body, Some(loop_continue_ip), None, None)
+                    } else {
+                        (body, None, None, None)
+                    }
+                } else {
+                    let loop_exit_inst_index = self.cur_inst_ptr();
+                    // Placeholder
+                    self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
+
+                    self.compile_block(body);
+
+                    (
+                        body,
+                        Some(loop_continue_ip),
+                        Some(loop_exit_inst_index),
+                        None,
+                    )
+                }
+            } else {
+                panic!("Should be parsed correctly");
+            };
+        if let Some(loop_continue_ip) = loop_continue_ip {
+            self.push_instruction(Inst::jump(loop_continue_ip), node);
         }
 
-        self.compile_block(body);
-
-        self.push_instruction(Inst::incr(index_addr), node);
-        self.push_instruction(Inst::jump(for_load_key_ip), node);
-
-        let loop_end_ip = self.cur_inst_ptr();
-        self.inst_mut(for_exit_jump_ip).set_jump_target(loop_end_ip);
+        if let Some(loop_exit_inst_index) = loop_exit_inst_index {
+            let loop_end_ip = self.cur_inst_ptr();
+            self.inst_mut(loop_exit_inst_index)
+                .set_jump_target(loop_end_ip);
+        }
 
         let mut continues = Vec::new();
         std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
         let mut breaks = Vec::new();
         std::mem::swap(&mut breaks, &mut self.loop_data_mut().breaks);
 
-        for continue_ip in continues {
-            self.inst_mut(continue_ip).set_incr_dst(index_addr);
-            self.inst_mut(continue_ip + 1)
-                .set_jump_target(for_load_key_ip);
+        if let Some(loop_continue_ip) = loop_continue_ip {
+            for continue_index in continues {
+                if let Some(index_addr) = index_addr {
+                    // Increment before continuing
+                    self.inst_mut(continue_index).set_incr_dst(index_addr);
+                    self.inst_mut(continue_index + 1)
+                        .set_jump_target(loop_continue_ip);
+                } else {
+                    self.inst_mut(continue_index)
+                        .set_jump_target(loop_continue_ip);
+                }
+            }
         }
 
         self.block_end(body);
 
         let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
 
-        for break_ip in breaks {
-            self.inst_mut(break_ip)
+        for break_index in breaks {
+            self.inst_mut(break_index)
                 .set_jump_target(loop_end_after_sp_reset_ip);
         }
     }
@@ -792,7 +853,8 @@ impl<'a> Compilation<'a> {
         &mut self,
         node: &'a AstNode,
         fn_node: Option<&'a AstNode>,
-        loop_node: Option<&'a AstNode>,
+        for_loop_node: Option<&'a AstNode>,
+        while_loop: bool,
     ) {
         let AstNodeKind::Block(nodes) = &node.kind else {
             self.fatal("Expected block node", node);
@@ -824,7 +886,7 @@ impl<'a> Compilation<'a> {
         }
 
         // Add loop variable declarations
-        if let Some(loop_node) = loop_node {
+        if let Some(loop_node) = for_loop_node {
             let AstNodeKind::ForLoop(key, item, _, _) = &loop_node.kind else {
                 panic!("Should be parsed correctly");
             };
@@ -865,12 +927,16 @@ impl<'a> Compilation<'a> {
 
         let fn_data = fn_node.map(|_| FnData { frame_ptr });
 
-        let loop_data = loop_node.map(|_| LoopData {
-            frame_ptr,
-            stack_ptr: self.cur_stack_ptr_offset,
-            breaks: Vec::new(),
-            continues: Vec::new(),
-        });
+        let loop_data = if for_loop_node.is_some() || while_loop {
+            Some(LoopData {
+                frame_ptr,
+                stack_ptr: self.cur_stack_ptr_offset,
+                breaks: Vec::new(),
+                continues: Vec::new(),
+            })
+        } else {
+            None
+        };
 
         self.scopes.push(ScopeData {
             var_decls: cur_scope_var_decls.clone(),
@@ -920,7 +986,7 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {
-        self.block_start(block, None, None);
+        self.block_start(block, None, None, false);
         self.compile_block(block);
         self.block_end(block);
     }
@@ -937,7 +1003,7 @@ impl<'a> Compilation<'a> {
                 AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
                 AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node),
                 AstNodeKind::Return(..) => self.compile_return(node),
-                AstNodeKind::ForLoop(..) => self.compile_for_loop(node),
+                AstNodeKind::ForLoop(..) | AstNodeKind::WhileLoop(..) => self.compile_loop(node),
                 AstNodeKind::Continue => self.compile_continue(node),
                 AstNodeKind::Break => self.compile_break(node),
                 AstNodeKind::IfStatement(..) => self.compile_if_statement(node),
