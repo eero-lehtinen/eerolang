@@ -334,10 +334,25 @@ pub const FN_RETURN_VALUE_REG: Addr = reg(4);
 pub const RESERVED_REGS: u32 = ARG_REG_START + ARG_REG_COUNT + 5;
 pub const MEMORY_SIZE: u32 = 2 << 13;
 
-#[derive(Debug, Clone)]
-pub struct ScopeData<'a> {
-    pub var_decls: Vec<(&'a str, usize)>,
-    pub frame_ptr: u32,
+#[derive(Debug)]
+struct ScopeData<'a> {
+    var_decls: Vec<(&'a str, usize)>,
+    frame_ptr: u32,
+    fn_data: Option<FnData>,
+    loop_data: Option<LoopData>,
+}
+
+#[derive(Debug)]
+struct FnData {
+    frame_ptr: u32,
+}
+
+#[derive(Debug)]
+struct LoopData {
+    frame_ptr: u32,
+    stack_ptr: u32,
+    breaks: Vec<u32>,
+    continues: Vec<u32>,
 }
 
 pub struct Compilation<'a> {
@@ -347,7 +362,7 @@ pub struct Compilation<'a> {
     pub functions: HashMap<String, (u32, ArgsRequred)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
-    pub scopes: Vec<ScopeData<'a>>,
+    scopes: Vec<ScopeData<'a>>,
     cur_stack_ptr_offset: u32,
 }
 
@@ -425,14 +440,14 @@ impl<'a> Compilation<'a> {
         self.ip_to_token.push(node.token_idx);
     }
 
-    fn compile_assignment(&mut self, node: &AstNode, ctx: &mut Context) {
+    fn compile_assignment(&mut self, node: &AstNode) {
         let (var, expr) = match &node.kind {
             AstNodeKind::DeclareAssign(var, expr) => (var, expr),
             AstNodeKind::Assign(var, expr) => (var, expr),
             _ => unreachable!(),
         };
         let var_addr = self.variable_offset(var, node);
-        let (expr_addr, _) = self.compile_expression(expr, var_addr, ctx);
+        let (expr_addr, _) = self.compile_expression(expr, var_addr);
         if expr_addr != var_addr {
             self.push_instruction(Inst::load_addr(var_addr, expr_addr), node);
         }
@@ -442,14 +457,13 @@ impl<'a> Compilation<'a> {
         &mut self,
         expr: &AstNode,
         dst_suggestion: Addr,
-        ctx: &mut Context,
     ) -> (Addr, Option<Value>) {
         match &expr.kind {
             AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
             AstNodeKind::Variable(name) => (self.variable_offset(name, expr), None),
             AstNodeKind::BinaryOp(left, op, right) => {
-                let (laddr, lval) = self.compile_expression(left, RESULT_REG1, ctx);
-                let (raddr, rval) = self.compile_expression(right, RESULT_REG2, ctx);
+                let (laddr, lval) = self.compile_expression(left, RESULT_REG1);
+                let (raddr, rval) = self.compile_expression(right, RESULT_REG2);
 
                 // Constant folding for literals
                 if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
@@ -466,14 +480,14 @@ impl<'a> Compilation<'a> {
                 (dst_suggestion, None)
             }
             AstNodeKind::FunctionCall(..) => {
-                self.compile_function_call(dst_suggestion, expr, ctx);
+                self.compile_function_call(dst_suggestion, expr);
                 (dst_suggestion, None)
             }
             _ => todo!(),
         }
     }
 
-    fn compile_function_definition(&mut self, node: &'a AstNode, ctx: &Context) {
+    fn compile_function_definition(&mut self, node: &'a AstNode) {
         let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
             unreachable!();
         };
@@ -499,7 +513,7 @@ impl<'a> Compilation<'a> {
         self.functions
             .insert(name.clone(), (fn_start_ip, args_required));
 
-        let mut fn_ctx = self.block_start(body, ctx, Some(node), None);
+        self.block_start(body, Some(node), None);
 
         // Load arguments from argument registers to stack variables
         for (arg_idx, arg) in args.iter().enumerate() {
@@ -509,7 +523,7 @@ impl<'a> Compilation<'a> {
             self.push_instruction(Inst::load_addr(arg_addr, arg_reg), node);
         }
 
-        self.compile_block(body, &mut fn_ctx);
+        self.compile_block(body);
 
         // Default return value is 1
         self.push_instruction(Inst::load_int(FN_RETURN_VALUE_REG, 1), node);
@@ -524,17 +538,17 @@ impl<'a> Compilation<'a> {
         self.inst_mut(fn_skip_jump_ip).set_jump_target(fn_end_ip);
     }
 
-    fn compile_return(&mut self, node: &'a AstNode, ctx: &mut Context) {
+    fn compile_return(&mut self, node: &'a AstNode) {
         let AstNodeKind::Return(expr) = &node.kind else {
             unreachable!();
         };
-        let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG, ctx);
+        let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG);
         if expr_addr != FN_RETURN_VALUE_REG {
             self.push_instruction(Inst::load_addr(FN_RETURN_VALUE_REG, expr_addr), node);
         }
 
         // Clean up stack frame.
-        let sub_sp = self.cur_stack_ptr_offset - ctx.fn_frame_ptr;
+        let sub_sp = self.cur_stack_ptr_offset - self.fn_data().frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
@@ -543,20 +557,20 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
     }
 
-    fn compile_set_function_args(&mut self, args: &[AstNode], ctx: &mut Context) {
+    fn compile_set_function_args(&mut self, args: &[AstNode]) {
         if args.len() > ARG_REG_COUNT as usize {
             self.fatal("Too many arguments in function call", &args[0]);
         }
         for (i, arg) in args.iter().enumerate() {
             let arg_reg = Addr::abs(ARG_REG_START + i as u32);
-            let (res_addr, _) = self.compile_expression(arg, arg_reg, ctx);
+            let (res_addr, _) = self.compile_expression(arg, arg_reg);
             if res_addr != arg_reg {
                 self.push_instruction(Inst::load_addr(arg_reg, res_addr), arg);
             }
         }
     }
 
-    fn compile_function_call(&mut self, dst: Addr, node: &AstNode, ctx: &mut Context) {
+    fn compile_function_call(&mut self, dst: Addr, node: &AstNode) {
         let AstNodeKind::FunctionCall(name, args) = &node.kind else {
             unreachable!();
         };
@@ -581,7 +595,7 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::save_regs(save_args_count), node);
         self.cur_stack_ptr_offset += save_regs_count + save_args_count;
 
-        self.compile_set_function_args(args, ctx);
+        self.compile_set_function_args(args);
 
         if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
             if !args_req.matches(args.len()) {
@@ -619,16 +633,15 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
     }
 
-    fn compile_for_loop(&mut self, node: &'a AstNode, ctx: &Context) {
+    fn compile_for_loop(&mut self, node: &'a AstNode) {
         let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind else {
             unreachable!();
         };
-        let mut for_ctx = self.block_start(body, ctx, None, Some(node));
-        for_ctx.loop_frame_ptr = self.scopes.last().unwrap().frame_ptr;
-        for_ctx.loop_stack_ptr = self.cur_stack_ptr_offset;
+
+        self.block_start(body, None, Some(node));
 
         let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
-        let (addr, _) = self.compile_expression(collection, iterable_addr, &mut for_ctx);
+        let (addr, _) = self.compile_expression(collection, iterable_addr);
         if addr != iterable_addr {
             self.push_instruction(Inst::load_addr(iterable_addr, addr), collection);
         };
@@ -667,7 +680,7 @@ impl<'a> Compilation<'a> {
             );
         }
 
-        self.compile_block(body, &mut for_ctx);
+        self.compile_block(body);
 
         self.push_instruction(Inst::incr(index_addr), node);
         self.push_instruction(Inst::jump(for_load_key_ip), node);
@@ -675,9 +688,14 @@ impl<'a> Compilation<'a> {
         let loop_end_ip = self.cur_inst_ptr();
         self.inst_mut(for_exit_jump_ip).set_jump_target(loop_end_ip);
 
-        for continue_ip in &for_ctx.loop_continues {
-            self.inst_mut(*continue_ip).set_incr_dst(index_addr);
-            self.inst_mut(*continue_ip + 1)
+        let mut continues = Vec::new();
+        std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
+        let mut breaks = Vec::new();
+        std::mem::swap(&mut breaks, &mut self.loop_data_mut().breaks);
+
+        for continue_ip in continues {
+            self.inst_mut(continue_ip).set_incr_dst(index_addr);
+            self.inst_mut(continue_ip + 1)
                 .set_jump_target(for_load_key_ip);
         }
 
@@ -685,39 +703,41 @@ impl<'a> Compilation<'a> {
 
         let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
 
-        for break_ip in &for_ctx.loop_breaks {
-            self.inst_mut(*break_ip)
+        for break_ip in breaks {
+            self.inst_mut(break_ip)
                 .set_jump_target(loop_end_after_sp_reset_ip);
         }
     }
 
-    fn compile_continue(&mut self, node: &'a AstNode, ctx: &mut Context) {
-        let sub_sp = self.cur_stack_ptr_offset - ctx.loop_stack_ptr;
+    fn compile_continue(&mut self, node: &'a AstNode) {
+        let sub_sp = self.cur_stack_ptr_offset - self.loop_data().stack_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
-        ctx.loop_continues.push(self.cur_inst_ptr());
+        let continue_ip = self.cur_inst_ptr();
+        self.loop_data_mut().continues.push(continue_ip);
         // Placeholder
         self.push_instruction(Inst::incr(Addr::abs(0)), node);
         // Placeholder
         self.push_instruction(Inst::jump(0), node);
     }
 
-    fn compile_break(&mut self, node: &'a AstNode, ctx: &mut Context) {
-        let sub_sp = self.cur_stack_ptr_offset - ctx.loop_frame_ptr;
+    fn compile_break(&mut self, node: &'a AstNode) {
+        let sub_sp = self.cur_stack_ptr_offset - self.loop_data().frame_ptr;
         if sub_sp > 0 {
             self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
         }
-        ctx.loop_breaks.push(self.cur_inst_ptr());
+        let break_ip = self.cur_inst_ptr();
         // Placeholder
         self.push_instruction(Inst::jump(0), node);
+        self.loop_data_mut().breaks.push(break_ip);
     }
 
-    fn compile_if_statement(&mut self, node: &'a AstNode, ctx: &mut Context) {
+    fn compile_if_statement(&mut self, node: &'a AstNode) {
         let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
             unreachable!();
         };
-        let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, ctx);
+        let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1);
 
         let const_cond_true = cond_val.map(|v| {
             !is_zero(&v).unwrap_or_else(|| {
@@ -730,9 +750,9 @@ impl<'a> Compilation<'a> {
 
         if let Some(const_cond_true) = const_cond_true {
             if const_cond_true {
-                self.compile_block_full(block, ctx);
+                self.compile_block_full(block);
             } else if let Some(else_block) = else_block {
-                self.compile_block_full(else_block, ctx);
+                self.compile_block_full(else_block);
             }
             return;
         }
@@ -741,7 +761,7 @@ impl<'a> Compilation<'a> {
         // Placeholder
         self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
 
-        self.compile_block_full(block, ctx);
+        self.compile_block_full(block);
 
         if let Some(else_block) = else_block {
             let else_jump_ip = self.cur_inst_ptr();
@@ -751,7 +771,7 @@ impl<'a> Compilation<'a> {
             let else_start_ip = self.cur_inst_ptr();
             self.instructions[if_jump_ip as usize].set_jump_target(else_start_ip);
 
-            self.compile_block_full(else_block, ctx);
+            self.compile_block_full(else_block);
 
             let after_else_ip = self.cur_inst_ptr();
             self.instructions[else_jump_ip as usize].set_jump_target(after_else_ip);
@@ -771,10 +791,9 @@ impl<'a> Compilation<'a> {
     fn block_start(
         &mut self,
         node: &'a AstNode,
-        prev_ctx: &Context,
         fn_node: Option<&'a AstNode>,
         loop_node: Option<&'a AstNode>,
-    ) -> Context {
+    ) {
         let AstNodeKind::Block(nodes) = &node.kind else {
             self.fatal("Expected block node", node);
         };
@@ -844,23 +863,21 @@ impl<'a> Compilation<'a> {
             self.cur_stack_ptr_offset += add_sp;
         }
 
+        let fn_data = fn_node.map(|_| FnData { frame_ptr });
+
+        let loop_data = loop_node.map(|_| LoopData {
+            frame_ptr,
+            stack_ptr: self.cur_stack_ptr_offset,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
+
         self.scopes.push(ScopeData {
             var_decls: cur_scope_var_decls.clone(),
             frame_ptr,
+            fn_data,
+            loop_data,
         });
-
-        let mut ctx = prev_ctx.clone();
-
-        if fn_node.is_some() {
-            ctx.fn_frame_ptr = frame_ptr;
-        }
-
-        if loop_node.is_some() {
-            ctx.loop_frame_ptr = frame_ptr;
-            ctx.loop_stack_ptr = self.cur_stack_ptr_offset;
-        }
-
-        ctx
     }
 
     fn block_end(&mut self, node: &'a AstNode) {
@@ -875,28 +892,55 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_block_full(&mut self, block: &'a AstNode, prev_ctx: &Context) {
-        let mut ctx = self.block_start(block, prev_ctx, None, None);
-        self.compile_block(block, &mut ctx);
+    fn loop_data(&self) -> &LoopData {
+        for scope in self.scopes.iter().rev() {
+            if let Some(loop_data) = &scope.loop_data {
+                return loop_data;
+            }
+        }
+        panic!("No loop data found in current scopes");
+    }
+
+    fn loop_data_mut(&mut self) -> &mut LoopData {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(loop_data) = &mut scope.loop_data {
+                return loop_data;
+            }
+        }
+        panic!("No loop data found in current scopes");
+    }
+
+    fn fn_data(&self) -> &FnData {
+        for scope in self.scopes.iter().rev() {
+            if let Some(fn_data) = &scope.fn_data {
+                return fn_data;
+            }
+        }
+        panic!("No function data found in current scopes");
+    }
+
+    fn compile_block_full(&mut self, block: &'a AstNode) {
+        self.block_start(block, None, None);
+        self.compile_block(block);
         self.block_end(block);
     }
 
-    fn compile_block(&mut self, block: &'a AstNode, ctx: &mut Context) {
+    fn compile_block(&mut self, block: &'a AstNode) {
         let AstNodeKind::Block(b) = &block.kind else {
             self.fatal("Expected block node", block);
         };
         for node in b.iter() {
             match &node.kind {
                 AstNodeKind::DeclareAssign(..) | AstNodeKind::Assign(..) => {
-                    self.compile_assignment(node, ctx)
+                    self.compile_assignment(node)
                 }
-                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node, ctx),
-                AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node, ctx),
-                AstNodeKind::Return(..) => self.compile_return(node, ctx),
-                AstNodeKind::ForLoop(..) => self.compile_for_loop(node, ctx),
-                AstNodeKind::Continue => self.compile_continue(node, ctx),
-                AstNodeKind::Break => self.compile_break(node, ctx),
-                AstNodeKind::IfStatement(..) => self.compile_if_statement(node, ctx),
+                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
+                AstNodeKind::FunctionCall(..) => self.compile_function_call(RESULT_REG1, node),
+                AstNodeKind::Return(..) => self.compile_return(node),
+                AstNodeKind::ForLoop(..) => self.compile_for_loop(node),
+                AstNodeKind::Continue => self.compile_continue(node),
+                AstNodeKind::Break => self.compile_break(node),
+                AstNodeKind::IfStatement(..) => self.compile_if_statement(node),
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }
@@ -905,21 +949,10 @@ impl<'a> Compilation<'a> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct Context {
-    fn_frame_ptr: u32,
-    loop_frame_ptr: u32,
-    loop_stack_ptr: u32,
-    loop_breaks: Vec<u32>,
-    loop_continues: Vec<u32>,
-}
-
 #[allow(dead_code)]
 pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
-    let mut ctx = c.block_start(block, &Context::default(), None, None);
-    c.compile_block(block, &mut ctx);
-    c.block_end(block);
+    c.compile_block_full(block);
     for (i, ins) in c.instructions.iter().enumerate() {
         trace!("{:4}: {}", i, ins);
     }
