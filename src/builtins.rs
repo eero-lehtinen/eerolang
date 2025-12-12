@@ -80,6 +80,15 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
     Ok(Value::range(start, end))
 }
 
+const NOT_ARGS: u32 = 1;
+pub fn builtin_not(args: &[Value]) -> ProgramFnRes {
+    let [arg] = args else {
+        arg_bail!("any", args);
+    };
+
+    Ok(Value::smi(if arg.is_falsy() { 1 } else { 0 }))
+}
+
 pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
     let mut w = std::io::stdout();
 
@@ -648,6 +657,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("list", builtin_list, ArgsRequred::Any),
         ("map", builtin_map, ArgsRequred::Any),
         ("range", builtin_range, ArgsRequred::Range(1, 2)),
+        ("not", builtin_not, ArgsRequred::Exact(NOT_ARGS)),
         ("print", builtin_print, ArgsRequred::Any),
         ("sleep", builtin_sleep, ArgsRequred::Exact(SLEEP_ARGS)),
         (
