@@ -1,0 +1,16 @@
+
+x := 1
+
+if 1 {
+    x := x + 1
+    print("Should be 2:", x)
+}
+
+print("Should be 1:", x)
+
+if 1 {
+    x = x + 2
+    print("Should be 3:", x)
+}
+
+print("Should be 3:", x)

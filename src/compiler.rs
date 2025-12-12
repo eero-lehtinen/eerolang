@@ -397,21 +397,34 @@ impl<'a> Compilation<'a> {
         &mut self.instructions[ip as usize]
     }
 
-    fn variable_offset(&mut self, name: &str, node: &AstNode) -> Addr {
+    fn variable_addr(&mut self, name: &str, node: &AstNode, to_decl: Option<&str>) -> Addr {
         trace!("{:?}", self.scopes);
 
         let pos = self.tokens[node.token_idx].byte_pos_start;
 
         let mut maybe_used_before_init = false;
-        for (i, scope) in self.scopes.iter().enumerate().rev() {
-            for (j, (dname, dpos)) in scope.var_decls.iter().enumerate() {
-                if *dname == name {
+
+        // If we are currently assigning to a declaration with the same name, we
+        // should search for outer scopes to shadow properly.
+        let skip_scope = if let Some(to_decl) = to_decl
+            && to_decl == name
+        {
+            maybe_used_before_init = true;
+            1
+        } else {
+            0
+        };
+
+        for (i, scope) in self.scopes.iter().enumerate().rev().skip(skip_scope) {
+            for (j, (decl_name, decl_pos)) in scope.var_decls.iter().enumerate() {
+                if *decl_name == name {
                     // We found it but it is later than the usage position.
-                    if *dpos > pos {
+                    if *decl_pos > pos {
                         // Still need to search outer scopes in case of shadowing.
                         maybe_used_before_init = true;
-                        continue;
+                        break;
                     }
+
                     // TODO: Absolute offsets can and should be used for top level variables, because
                     // recursive functions need to access them correctly.
                     if i == 0 {
@@ -456,13 +469,13 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_assignment(&mut self, node: &AstNode) {
-        let (var, expr) = match &node.kind {
-            AstNodeKind::DeclareAssign(var, expr) => (var, expr),
-            AstNodeKind::Assign(var, expr) => (var, expr),
+        let (var, expr, decl) = match &node.kind {
+            AstNodeKind::DeclareAssign(var, expr) => (var, expr, true),
+            AstNodeKind::Assign(var, expr) => (var, expr, false),
             _ => unreachable!(),
         };
-        let var_addr = self.variable_offset(var, node);
-        let (expr_addr, _) = self.compile_expression(expr, var_addr);
+        let var_addr = self.variable_addr(var, node, None);
+        let (expr_addr, _) = self.compile_expression(expr, var_addr, decl.then_some(var));
         if expr_addr != var_addr {
             self.push_instruction(Inst::load_addr(var_addr, expr_addr), node);
         }
@@ -472,13 +485,14 @@ impl<'a> Compilation<'a> {
         &mut self,
         expr: &AstNode,
         dst_suggestion: Addr,
+        to_decl: Option<&str>,
     ) -> (Addr, Option<Value>) {
         match &expr.kind {
             AstNodeKind::Literal(literal) => self.make_literal(literal),
-            AstNodeKind::Variable(name) => (self.variable_offset(name, expr), None),
+            AstNodeKind::Variable(name) => (self.variable_addr(name, expr, to_decl), None),
             AstNodeKind::BinaryOp(left, op, right) => {
-                let (laddr, lval) = self.compile_expression(left, RESULT_REG1);
-                let (raddr, rval) = self.compile_expression(right, RESULT_REG2);
+                let (laddr, lval) = self.compile_expression(left, RESULT_REG1, to_decl);
+                let (raddr, rval) = self.compile_expression(right, RESULT_REG2, to_decl);
 
                 // Constant folding for literals
                 if let (Some(lit_left), Some(lit_right)) = (lval, rval) {
@@ -533,7 +547,7 @@ impl<'a> Compilation<'a> {
         // Load arguments from argument registers to stack variables
         for (arg_idx, arg) in args.iter().enumerate() {
             let arg_name = arg.get_var_name().expect("Parsed correctly");
-            let arg_addr = self.variable_offset(arg_name, arg);
+            let arg_addr = self.variable_addr(arg_name, arg, None);
             let arg_reg = Addr::abs(ARG_REG_START + arg_idx as u32);
             self.push_instruction(Inst::load_addr(arg_addr, arg_reg), node);
         }
@@ -557,7 +571,7 @@ impl<'a> Compilation<'a> {
         let AstNodeKind::Return(expr) = &node.kind else {
             unreachable!();
         };
-        let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG);
+        let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG, None);
         if expr_addr != FN_RETURN_VALUE_REG {
             self.push_instruction(Inst::load_addr(FN_RETURN_VALUE_REG, expr_addr), node);
         }
@@ -578,7 +592,7 @@ impl<'a> Compilation<'a> {
         }
         for (i, arg) in args.iter().enumerate() {
             let arg_reg = Addr::abs(ARG_REG_START + i as u32);
-            let (res_addr, _) = self.compile_expression(arg, arg_reg);
+            let (res_addr, _) = self.compile_expression(arg, arg_reg, None);
             if res_addr != arg_reg {
                 self.push_instruction(Inst::load_addr(arg_reg, res_addr), arg);
             }
@@ -653,15 +667,19 @@ impl<'a> Compilation<'a> {
             if let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind {
                 self.block_start(body, None, Some(node), false);
 
-                let iterable_addr = self.variable_offset(Self::FOR_ITERABLE_TEMP_VAR, node);
-                let (addr, _) = self.compile_expression(collection, iterable_addr);
+                let iterable_addr = self.variable_addr(Self::FOR_ITERABLE_TEMP_VAR, node, None);
+                let (addr, _) = self.compile_expression(
+                    collection,
+                    iterable_addr,
+                    Some(Self::FOR_ITERABLE_TEMP_VAR),
+                );
                 if addr != iterable_addr {
                     self.push_instruction(Inst::load_addr(iterable_addr, addr), collection);
                 };
 
                 self.push_instruction(Inst::init_map_iteration_list(iterable_addr), node);
 
-                let index_addr = self.variable_offset(Self::FOR_INDEX_TEMP_VAR, node);
+                let index_addr = self.variable_addr(Self::FOR_INDEX_TEMP_VAR, node, None);
                 self.push_instruction(Inst::load_int(index_addr, 0), node);
 
                 let loop_continue_ip = self.cur_inst_ptr();
@@ -674,7 +692,7 @@ impl<'a> Compilation<'a> {
                 } else {
                     (Self::FOR_KEY_TEMP_VAR, node)
                 };
-                let key_addr = self.variable_offset(key_var_name, key_node);
+                let key_addr = self.variable_addr(key_var_name, key_node, None);
                 self.push_instruction(
                     Inst::load_iteration_key(key_addr, iterable_addr, index_addr),
                     key_node,
@@ -686,7 +704,7 @@ impl<'a> Compilation<'a> {
 
                 if let Some(item_node) = item {
                     let item_var_name = item_node.get_var_name().expect("Parsed correctly");
-                    let item_addr = self.variable_offset(item_var_name, item_node);
+                    let item_addr = self.variable_addr(item_var_name, item_node, None);
                     self.push_instruction(
                         Inst::load_collection_item(item_addr, iterable_addr, key_addr),
                         item_node,
@@ -708,7 +726,7 @@ impl<'a> Compilation<'a> {
 
                 let loop_continue_ip = self.cur_inst_ptr();
 
-                let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1);
+                let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, None);
 
                 let const_cond_true = cond_val.map(|v| {
                     !is_zero(&v).unwrap_or_else(|| {
@@ -813,7 +831,7 @@ impl<'a> Compilation<'a> {
         let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
             unreachable!();
         };
-        let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1);
+        let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, None);
 
         let const_cond_true = cond_val.map(|v| {
             !is_zero(&v).unwrap_or_else(|| {

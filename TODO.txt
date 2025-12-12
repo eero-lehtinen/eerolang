@@ -1,1 +1,0 @@
-- It's bugged to shadow a variable in a nested scope with a the same name (e.g. `var := var + 1` inside a loop)
