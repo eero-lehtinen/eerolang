@@ -1036,7 +1036,7 @@ pub fn binary_op_err(err: OpError, left_val: &Value, op: Operator, right_val: &V
     match err {
         OpError::InvalidOperandTypes => format!(
             "Cannot apply operator '{}' to operands {} and {})",
-            op.dbg_display(),
+            op,
             left_val.dbg_display(),
             right_val.dbg_display()
         ),

@@ -148,7 +148,7 @@ impl<'a> Vm<'a> {
                     "Binary op {} (at {}) {} {} (at {}) = {} (at {})",
                     l.dbg_display(),
                     src1,
-                    $op.dbg_display(),
+                    $op,
                     r.dbg_display(),
                     src2,
                     res.dbg_display(),

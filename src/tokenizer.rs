@@ -84,7 +84,7 @@ impl Display for TokenKind {
         match self {
             TokenKind::DeclareAssign => write!(f, ":="),
             TokenKind::Assign => write!(f, "="),
-            TokenKind::Operator(op) => write!(f, "{}", op.dbg_display()),
+            TokenKind::Operator(op) => write!(f, "{}", op),
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),
             TokenKind::LBrace => write!(f, "{{"),
@@ -142,9 +142,11 @@ impl Operator {
             Operator::Mul | Operator::Div => 2,
         }
     }
+}
 
-    pub fn dbg_display(&self) -> &'static str {
-        match self {
+impl Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
             Operator::Add => "+",
             Operator::Sub => "-",
             Operator::Mul => "*",
@@ -155,13 +157,8 @@ impl Operator {
             Operator::Gte => ">=",
             Operator::Eq => "==",
             Operator::Neq => "!=",
-        }
-    }
-}
-
-impl Display for Operator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.dbg_display())
+        };
+        write!(f, "{}", text)
     }
 }
 
