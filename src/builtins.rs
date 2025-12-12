@@ -503,22 +503,14 @@ pub fn builtin_remove(args: &[Value]) -> ProgramFnRes {
 const CLONE_ARGS: u32 = 1;
 pub fn builtin_clone(args: &[Value]) -> ProgramFnRes {
     let [target] = args else {
-        arg_bail!("list/map", args);
+        arg_bail!("any", args);
     };
 
-    match target.as_value_ref() {
-        ValueRef::List(_) => Ok(clone_impl(target)),
-        ValueRef::Map(_) => Ok(clone_impl(target)),
-        _ => arg_bail!("list/map", args),
-    }
+    Ok(clone_impl(target))
 }
 
 fn clone_impl(value: &Value) -> Value {
     match value.as_value_ref() {
-        ValueRef::Smi(int) => Value::smi(int),
-        ValueRef::Float(f) => Value::float(f),
-        ValueRef::String(s) => Value::string(s.to_string()),
-        ValueRef::Range(s, e) => Value::range(s, e),
         ValueRef::List(l) => {
             let cloned_list = l.borrow().iter().map(clone_impl).collect();
             Value::list(cloned_list)
@@ -532,6 +524,7 @@ fn clone_impl(value: &Value) -> Value {
                 .collect();
             Value::map(cloned_map)
         }
+        _ => value.clone(),
     }
 }
 
