@@ -1,5 +1,6 @@
 use std::iter::Peekable;
 
+use colored::Colorize;
 use log::trace;
 
 use crate::{
@@ -498,8 +499,10 @@ fn fatal(msg: &str, token: &Token) -> ! {
 
 pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
     let char_col = find_source_char_col(token.line, token.byte_col);
+
     eprintln!(
-        "Error: {}: at line {}, column {}",
+        "{}: {}: at line {}, column {}",
+        "Error".color(colored::Color::BrightRed),
         msg,
         token.line + 1,
         char_col + 1,
@@ -511,6 +514,7 @@ pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
         token.byte_pos_start,
         token.byte_pos_end,
         2,
+        colored::Color::BrightRed,
     );
     eprintln!("{}", end_msg);
     std::process::exit(1);
