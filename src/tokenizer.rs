@@ -4,7 +4,7 @@ use colored::Colorize;
 
 use crate::{SOURCE, value::Value};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     DeclareAssign,
     Assign,
@@ -25,32 +25,6 @@ pub enum TokenKind {
     KeywordBreak,
     KeywordFn,
     KeywordReturn,
-}
-
-impl PartialEq for TokenKind {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (TokenKind::DeclareAssign, TokenKind::DeclareAssign) => true,
-            (TokenKind::Assign, TokenKind::Assign) => true,
-            (TokenKind::Operator(op1), TokenKind::Operator(op2)) => op1 == op2,
-            (TokenKind::LParen, TokenKind::LParen) => true,
-            (TokenKind::RParen, TokenKind::RParen) => true,
-            (TokenKind::LBrace, TokenKind::LBrace) => true,
-            (TokenKind::RBrace, TokenKind::RBrace) => true,
-            (TokenKind::Comma, TokenKind::Comma) => true,
-            (TokenKind::Literal(_), TokenKind::Literal(_)) => true,
-            (TokenKind::Ident(_), TokenKind::Ident(_)) => true,
-            (TokenKind::KeywordFor, TokenKind::KeywordFor) => true,
-            (TokenKind::KeywordIn, TokenKind::KeywordIn) => true,
-            (TokenKind::KeywordIf, TokenKind::KeywordIf) => true,
-            (TokenKind::KeywordElse, TokenKind::KeywordElse) => true,
-            (TokenKind::KeywordContinue, TokenKind::KeywordContinue) => true,
-            (TokenKind::KeywordBreak, TokenKind::KeywordBreak) => true,
-            (TokenKind::KeywordFn, TokenKind::KeywordFn) => true,
-            (TokenKind::KeywordReturn, TokenKind::KeywordReturn) => true,
-            _ => false,
-        }
-    }
 }
 
 impl TokenKind {
