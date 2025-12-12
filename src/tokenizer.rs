@@ -114,19 +114,23 @@ pub enum Operator {
     Gte,
     Eq,
     Neq,
+    And,
+    Or,
 }
 
 impl Operator {
     pub fn precedence(&self) -> u8 {
         match self {
+            Operator::Or => 0,
+            Operator::And => 1,
             Operator::Lt
             | Operator::Gt
             | Operator::Lte
             | Operator::Gte
             | Operator::Eq
-            | Operator::Neq => 0,
-            Operator::Add | Operator::Sub => 1,
-            Operator::Mul | Operator::Div => 2,
+            | Operator::Neq => 2,
+            Operator::Add | Operator::Sub => 3,
+            Operator::Mul | Operator::Div => 4,
         }
     }
 }
@@ -144,6 +148,8 @@ impl Display for Operator {
             Operator::Gte => ">=",
             Operator::Eq => "==",
             Operator::Neq => "!=",
+            Operator::And => "and",
+            Operator::Or => "or",
         };
         write!(f, "{}", text)
     }
@@ -311,6 +317,8 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     "break" => tok!("break".len(), TokenKind::KeywordBreak),
                     "fn" => tok!("fn".len(), TokenKind::KeywordFn),
                     "return" => tok!("return".len(), TokenKind::KeywordReturn),
+                    "and" => tok!("and".len(), TokenKind::Operator(Operator::And)),
+                    "or" => tok!("or".len(), TokenKind::Operator(Operator::Or)),
                     ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }

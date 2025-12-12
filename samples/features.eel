@@ -43,6 +43,17 @@ for key, value in map {
     print("Key:", key, "Value:", value)
 }
 
+# Logical expressions
+if 1 and 0 {
+    print("This won't print")
+}
+if 1 or 0 {
+    print("This will print")
+}
+# Ternaries also possible (0 is falsy and so are empty strings, lists and maps)
+res := x > 10 and "big" or "small"
+print("x is", res)
+
 # Builtins:
 
 # Prints any number of arguments of any type
@@ -90,7 +101,6 @@ clonedList := clone(list)
 
 # Gets the length of a string, list or map
 length := len(list)
-
 
 # Math
 x = mod(10, 3)

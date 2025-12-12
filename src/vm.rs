@@ -9,7 +9,6 @@ use crate::{
     compiler::{
         ARG_REG_START, ARG_REGS, Addr, Compilation, FN_RETURN_VALUE_REG, Inst, MEMORY_SIZE, OpCode,
         REGS_TO_STORE_ON_FN_CALL, RESERVED_REGS, RESULT_REG1, SUCCESS_FLAG_REG, binary_op_err,
-        is_zero,
     },
     tokenizer::{Operator, Token, find_source_char_col, report_source_pos},
     value::{Map, Value, ValueRef},
@@ -215,6 +214,8 @@ impl<'a> Vm<'a> {
                 OpCode::Gte => bop!(gte, args, Operator::Gte),
                 OpCode::Eq => bop!(eq, args, Operator::Eq),
                 OpCode::Neq => bop!(neq, args, Operator::Neq),
+                OpCode::And => bop!(and, args, Operator::And),
+                OpCode::Or => bop!(or, args, Operator::Or),
                 OpCode::CallBuiltin => {
                     let func = args.dst;
                     let arg_count = args.src1 as u8;
@@ -271,7 +272,7 @@ impl<'a> Vm<'a> {
                     );
                     self.inst_ptr = target_ip as usize;
                 }
-                OpCode::JumpIfZero => {
+                OpCode::JumpIfFalsy => {
                     let target = args.dst;
                     let cond = Addr::from_raw(args.src1);
                     trace!(
@@ -282,16 +283,7 @@ impl<'a> Vm<'a> {
                         cond
                     );
                     let cond_value = &self.mem_get(cond);
-                    let is_zero = match is_zero(cond_value) {
-                        Some(v) => v,
-                        None => {
-                            self.fatal(&format!(
-                                "Expected (int) as condition, got {}",
-                                cond_value.dbg_display(),
-                            ));
-                        }
-                    };
-                    if is_zero {
+                    if cond_value.is_falsy() {
                         self.inst_ptr = target as usize;
                     }
                 }

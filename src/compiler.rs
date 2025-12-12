@@ -99,13 +99,15 @@ pub enum OpCode {
     Gte,
     Eq,
     Neq,
+    And,
+    Or,
     Incr,
     CallBuiltin,
     SaveRegs,
     RestoreRegs,
     Jump,
     JumpAddr,
-    JumpIfZero,
+    JumpIfFalsy,
 }
 
 impl Display for OpCode {
@@ -183,6 +185,8 @@ impl Inst {
             Operator::Gte => OpCode::Gte,
             Operator::Eq => OpCode::Eq,
             Operator::Neq => OpCode::Neq,
+            Operator::And => OpCode::And,
+            Operator::Or => OpCode::Or,
         };
 
         Self::new(opcode, dst.raw(), src1.raw(), src2.raw())
@@ -213,7 +217,7 @@ impl Inst {
     }
 
     pub fn jump_if_zero(target: u32, cond: Addr) -> Self {
-        Self::new(OpCode::JumpIfZero, target, cond.raw(), 0)
+        Self::new(OpCode::JumpIfFalsy, target, cond.raw(), 0)
     }
 
     fn set_incr_dst(&mut self, dst: Addr) {
@@ -223,7 +227,7 @@ impl Inst {
 
     fn set_jump_target(&mut self, target_ip: u32) {
         assert!(
-            matches!(self.opcode, OpCode::Jump | OpCode::JumpIfZero),
+            matches!(self.opcode, OpCode::Jump | OpCode::JumpIfFalsy),
             "Can only set jump target on jump instructions"
         );
 
@@ -273,7 +277,9 @@ impl Display for Inst {
             | OpCode::Lte
             | OpCode::Gte
             | OpCode::Eq
-            | OpCode::Neq => write!(
+            | OpCode::Neq
+            | OpCode::And
+            | OpCode::Or => write!(
                 f,
                 "{} {} {}",
                 Addr::from_raw(self.args.dst),
@@ -292,7 +298,7 @@ impl Display for Inst {
             OpCode::RestoreRegs => {}
             OpCode::Jump => write!(f, "{:<5}", self.args.dst)?,
             OpCode::JumpAddr => write!(f, "{}", Addr::from_raw(self.args.dst))?,
-            OpCode::JumpIfZero => {
+            OpCode::JumpIfFalsy => {
                 write!(f, "{:<5} {}", self.args.dst, Addr::from_raw(self.args.src1))?
             }
         }
@@ -728,14 +734,7 @@ impl<'a> Compilation<'a> {
 
                 let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, None);
 
-                let const_cond_true = cond_val.map(|v| {
-                    !is_zero(&v).unwrap_or_else(|| {
-                        self.fatal(
-                            "Condition expression in while loop must be an integer",
-                            condition,
-                        )
-                    })
-                });
+                let const_cond_true = cond_val.map(|v| !v.is_falsy());
 
                 // If we are able to do constant folding, then the expression compiled into nothing
                 // and we can just not compile the body if it was false.
@@ -833,14 +832,7 @@ impl<'a> Compilation<'a> {
         };
         let (cond_addr, cond_val) = self.compile_expression(condition, RESULT_REG1, None);
 
-        let const_cond_true = cond_val.map(|v| {
-            !is_zero(&v).unwrap_or_else(|| {
-                self.fatal(
-                    "Condition expression in if statement must be an integer",
-                    condition,
-                )
-            })
-        });
+        let const_cond_true = cond_val.map(|v| !v.is_falsy());
 
         if let Some(const_cond_true) = const_cond_true {
             if const_cond_true {
@@ -1129,10 +1121,7 @@ pub fn binary_op(l: &Value, op: Operator, r: &Value) -> OpResult {
         Operator::Gte => l.gte(r),
         Operator::Eq => l.eq(r),
         Operator::Neq => l.neq(r),
+        Operator::And => l.and(r),
+        Operator::Or => l.or(r),
     }
-}
-
-#[inline]
-pub fn is_zero(cond_value: &Value) -> Option<bool> {
-    Some(cond_value.as_int()? == 0)
 }

@@ -249,6 +249,33 @@ impl Value {
         Ok(res)
     }
 
+    pub fn is_falsy(&self) -> bool {
+        match self.as_value_ref() {
+            ValueRef::Smi(i) => i == 0,
+            ValueRef::Float(f) => f == 0.0,
+            ValueRef::Range(_, _) => false,
+            ValueRef::String(s) => s.is_empty(),
+            ValueRef::List(lst) => lst.borrow().is_empty(),
+            ValueRef::Map(map) => map.borrow().inner.is_empty(),
+        }
+    }
+
+    pub fn or(&self, other: &Self) -> OpResult {
+        if self.is_falsy() {
+            Ok(other.clone())
+        } else {
+            Ok(self.clone())
+        }
+    }
+
+    pub fn and(&self, other: &Self) -> OpResult {
+        if self.is_falsy() {
+            Ok(self.clone())
+        } else {
+            Ok(other.clone())
+        }
+    }
+
     pub fn dbg_display(&self) -> String {
         format!("{:?}", self)
     }
