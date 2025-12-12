@@ -1,3 +1,1 @@
 - It's bugged to shadow a variable in a nested scope with a the same name (e.g. `var := var + 1` inside a loop)
-- Floats probably should be value types instead of reference types
-- Show syntax highlighted stuff in error messages

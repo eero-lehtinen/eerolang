@@ -3,6 +3,7 @@ use std::ops::DerefMut;
 use log::trace;
 
 use crate::{
+    TOKENS,
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
     compiler::{
@@ -342,7 +343,14 @@ impl<'a> Vm<'a> {
     fn step(&mut self, inst_ptr: usize) {
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
         let char_col = find_source_char_col(token.line, token.byte_col);
-        report_source_pos(token.line, char_col, 0);
+        report_source_pos(
+            TOKENS.get().unwrap(),
+            token.line,
+            char_col,
+            token.byte_pos_start,
+            token.byte_pos_end,
+            0,
+        );
 
         trace!(
             "Regs: {}",

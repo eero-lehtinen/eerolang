@@ -1,8 +1,12 @@
-use std::{fmt::Display, io::Write};
+use std::{
+    fmt::Display,
+    io::{StdoutLock, Write},
+    ops::Range,
+};
 
 use colored::Colorize;
 
-use crate::{SOURCE, value::Value};
+use crate::SOURCE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -14,7 +18,7 @@ pub enum TokenKind {
     LBrace,
     RBrace,
     Comma,
-    Literal(Value),
+    Literal(Literal),
     Ident(String),
     KeywordFor,
     KeywordWhile,
@@ -25,6 +29,13 @@ pub enum TokenKind {
     KeywordBreak,
     KeywordFn,
     KeywordReturn,
+    Comment,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Literal {
+    Number(f64),
+    String(String),
 }
 
 impl TokenKind {
@@ -37,8 +48,9 @@ impl TokenKind {
             | TokenKind::RParen
             | TokenKind::LBrace
             | TokenKind::RBrace
-            | TokenKind::Comma => colored::Color::Blue,
-            TokenKind::Literal(_) => colored::Color::Green,
+            | TokenKind::Comma => colored::Color::White,
+            TokenKind::Literal(Literal::String(_)) => colored::Color::Green,
+            TokenKind::Literal(Literal::Number(_)) => colored::Color::BrightCyan,
             TokenKind::Ident(_) => colored::Color::Cyan,
             TokenKind::KeywordFor
             | TokenKind::KeywordWhile
@@ -49,6 +61,7 @@ impl TokenKind {
             | TokenKind::KeywordBreak
             | TokenKind::KeywordFn
             | TokenKind::KeywordReturn => colored::Color::Magenta,
+            TokenKind::Comment => colored::Color::BrightBlack,
         }
     }
 }
@@ -75,6 +88,7 @@ impl Display for TokenKind {
             TokenKind::KeywordBreak => write!(f, "break"),
             TokenKind::KeywordFn => write!(f, "fn"),
             TokenKind::KeywordReturn => write!(f, "return"),
+            TokenKind::Comment => write!(f, "# <comment>"),
         }
     }
 }
@@ -136,54 +150,12 @@ impl Display for Operator {
     }
 }
 
-pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
-    SOURCE
-        .get()
-        .unwrap()
-        .lines()
-        .nth(row)
-        .and_then(|line| {
-            line.char_indices()
-                .enumerate()
-                .find_map(|(char_idx, (bidx, _))| {
-                    if bidx >= byte_col {
-                        Some(char_idx)
-                    } else {
-                        None
-                    }
-                })
-        })
-        .unwrap_or(0)
-}
-
-pub fn report_source_pos(row: usize, char_col: usize, context: u32) {
-    for (i, src_line) in SOURCE.get().unwrap().lines().enumerate() {
-        if (i as i64 - row as i64).abs() <= context as i64 {
-            eprintln!("{:4} | {}", i + 1, src_line);
-        }
-        if i == row {
-            eprintln!("       {}^", " ".repeat(char_col));
-        }
-    }
-}
-
 pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut iter = source.char_indices().peekable();
     let mut tbuf = String::new();
     let mut row = 0;
     let mut byte_row_start = 0;
-
-    macro_rules! panic_with_pos {
-        ($msg:expr) => {
-            let byte_col = iter.peek().map_or(0, |(i, _)| i - byte_row_start);
-            let char_col = find_source_char_col(row, byte_col);
-            eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
-            report_source_pos(row, byte_col, 2);
-            eprintln!("Tokenization failed");
-            std::process::exit(1);
-        };
-    }
 
     macro_rules! update_row {
         ($i:expr) => {
@@ -193,6 +165,18 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     }
 
     while let Some((byte_pos, ch)) = iter.next() {
+        macro_rules! panic_with_pos {
+            ($msg:expr) => {
+                let byte_pos_end = iter.peek().map_or(byte_pos + 1, |(i, _)| *i + 1);
+                let byte_col = byte_pos - byte_row_start;
+                let char_col = find_source_char_col(row, byte_col);
+                eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
+                let context = 2;
+                report_source_pos(&tokens, row, byte_col, byte_pos, byte_pos_end, context);
+                eprintln!("Tokenization failed");
+                std::process::exit(1);
+            };
+        }
         macro_rules! tok {
             ($len:expr, $kind:expr) => {{
                 let index = tokens.len();
@@ -233,7 +217,7 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     iter.next();
                     tok!(2, TokenKind::Operator(Operator::Neq));
                 } else {
-                    panic_with_pos!(format!("Unexpected character: {}", ch));
+                    panic_with_pos!(format!("Expected '=' after '{}'", ch));
                 }
             }
             ':' => {
@@ -241,7 +225,7 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     iter.next();
                     tok!(2, TokenKind::DeclareAssign);
                 } else {
-                    panic_with_pos!(format!("Unexpected character: {}", ch));
+                    panic_with_pos!(format!("Expected '=' after '{}'", ch));
                 }
             }
             '=' => {
@@ -258,8 +242,10 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             '}' => tok!(1, TokenKind::RBrace),
             ',' => tok!(1, TokenKind::Comma),
             '#' => {
+                let start = byte_pos + 1;
                 for (i, next_ch) in iter.by_ref() {
                     if next_ch == '\n' {
+                        tok!(i - start + 1, TokenKind::Comment);
                         update_row!(i);
                         break;
                     }
@@ -268,7 +254,9 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             '"' => {
                 tbuf.clear();
                 let mut escape = false;
+                let mut tok_len = 0;
                 for (_, next_ch) in iter.by_ref() {
+                    tok_len += next_ch.len_utf8();
                     if next_ch == '\\' && !escape {
                         escape = true;
                         continue;
@@ -290,7 +278,10 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     }
                     escape = false;
                 }
-                tok!(tbuf.len(), TokenKind::Literal(Value::string(tbuf.clone())));
+                tok!(
+                    tok_len + 1,
+                    TokenKind::Literal(Literal::String(tbuf.clone()))
+                );
                 tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
@@ -341,17 +332,17 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     ));
                 }
                 let data = &source[byte_pos..byte_end_pos];
-                if is_float {
-                    if let Ok(float_val) = data.parse::<f64>() {
-                        tok!(data.len(), TokenKind::Literal(Value::float(float_val)));
-                    } else {
-                        panic_with_pos!(format!("Invalid float literal: '{}'", data));
-                    }
-                } else if let Ok(int_val) = data.parse::<i64>() {
-                    tok!(data.len(), TokenKind::Literal(Value::int(int_val)));
+                // if is_float {
+                if let Ok(float_val) = data.parse::<f64>() {
+                    tok!(data.len(), TokenKind::Literal(Literal::Number(float_val)));
                 } else {
-                    panic_with_pos!(format!("Invalid integer literal: '{}'", data));
+                    panic_with_pos!(format!("Invalid number literal: '{}'", data));
                 }
+                // } else if let Ok(int_val) = data.parse::<i64>() {
+                //     tok!(data.len(), TokenKind::Literal(Value::int(int_val)));
+                // } else {
+                //     panic_with_pos!(format!("Invalid integer literal: '{}'", data));
+                // }
             }
             '\n' => {
                 update_row!(byte_pos);
@@ -364,43 +355,157 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     }
 
     if show {
-        let source = SOURCE.get().unwrap();
-        let mut stdout = std::io::stdout().lock();
-        let mut line = 0;
-        let mut byte_pos = 0;
-        write!(
-            stdout,
-            "{}",
-            format!("{:4} | ", 1)
-                .color(colored::Color::White)
-                .on_color(colored::Color::Black),
-        )
-        .unwrap();
-        for tok in &tokens {
-            while byte_pos < tok.byte_pos_start {
-                let ch = source.as_bytes()[byte_pos] as char;
-                write!(stdout, "{}", ch).unwrap();
-                if ch == '\n' {
-                    line += 1;
-                    write!(
-                        stdout,
-                        "{}",
-                        format!("{:4} | ", line + 1)
-                            .color(colored::Color::White)
-                            .on_color(colored::Color::Black),
-                    )
-                    .unwrap();
-                }
-                byte_pos += 1;
-            }
-            let c = source[tok.byte_pos_start..tok.byte_pos_end]
-                .color(tok.kind.color())
-                .on_color(colored::Color::Black);
-            byte_pos = tok.byte_pos_end;
-            write!(stdout, "{}", c).unwrap();
-        }
-        writeln!(stdout).unwrap();
+        print_colored_tokens(&tokens, None, None);
     }
 
     tokens
+}
+
+pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
+    SOURCE
+        .get()
+        .unwrap()
+        .lines()
+        .nth(row)
+        .and_then(|line| {
+            line.char_indices()
+                .enumerate()
+                .find_map(|(char_idx, (bidx, _))| {
+                    if bidx >= byte_col {
+                        Some(char_idx)
+                    } else {
+                        None
+                    }
+                })
+        })
+        .unwrap_or(0)
+}
+
+pub fn report_source_pos(
+    tokens: &[Token],
+    row: usize,
+    char_col: usize,
+    byte_pos_start: usize,
+    byte_pos_end: usize,
+    context: u32,
+) {
+    print_colored_tokens(
+        tokens,
+        Some(row.saturating_sub(context as usize)..(row + context as usize + 1)),
+        Some((row, char_col, byte_pos_start, byte_pos_end)),
+    );
+}
+
+fn print_colored_tokens(
+    tokens: &[Token],
+    line_range: Option<Range<usize>>,
+    error_pos: Option<(usize, usize, usize, usize)>,
+) {
+    let source = SOURCE.get().unwrap();
+    let mut stdout = std::io::stdout().lock();
+
+    let line_start = |stdout: &mut StdoutLock, line: usize| {
+        write!(
+            stdout,
+            "{}",
+            format!("{:4} | ", line + 1)
+                .color(colored::Color::BrightBlack)
+                .on_color(colored::Color::Black),
+        )
+        .unwrap()
+    };
+
+    let show_error = |stdout: &mut StdoutLock, line: usize| {
+        if let Some((err_line, err_col, _, _)) = error_pos
+            && line == err_line
+        {
+            writeln!(
+                stdout,
+                "{}{}",
+                " ".repeat(err_col + 7),
+                "^".color(colored::Color::Red)
+            )
+            .unwrap();
+        }
+    };
+
+    let mut tokens = tokens
+        .iter()
+        .filter(|t| {
+            if let Some(range) = &line_range {
+                t.line >= range.start && t.line < range.end
+            } else {
+                true
+            }
+        })
+        .peekable();
+
+    let mut line = 0;
+
+    if let Some(range) = &line_range {
+        line = range.start;
+    }
+
+    let mut byte_pos = tokens.peek().map_or(0, |t| t.byte_pos_start - t.byte_col);
+
+    line_start(&mut stdout, line);
+    for tok in tokens {
+        while byte_pos < tok.byte_pos_start {
+            let ch = source.as_bytes()[byte_pos] as char;
+            if ch == '\n' {
+                line += 1;
+                writeln!(stdout).unwrap();
+
+                show_error(&mut stdout, line);
+                line_start(&mut stdout, line);
+            } else {
+                let non_tok = &source[byte_pos..byte_pos + 1].color(colored::Color::Red);
+                write!(stdout, "{}", non_tok).unwrap();
+            }
+            byte_pos += 1;
+        }
+        let color = if error_pos.is_some_and(|(_, _, err_byte_pos_start, err_byte_pos_end)| {
+            tok.byte_pos_start == err_byte_pos_start && tok.byte_pos_end == err_byte_pos_end
+        }) {
+            colored::Color::Red
+        } else {
+            tok.kind.color()
+        };
+        let c = source[tok.byte_pos_start..tok.byte_pos_end].color(color);
+        byte_pos = tok.byte_pos_end;
+        write!(stdout, "{}", c).unwrap();
+    }
+
+    // If errored while tokenizing, the erroring token won't exist, so we have to highlight normal
+    // text here.
+    if let Some((err_line, _, err_byte_pos_start, err_byte_pos_end)) = error_pos {
+        while let Some(ch) = source.as_bytes().get(byte_pos).cloned() {
+            let ch = ch as char;
+            if ch == '\n' {
+                line += 1;
+                writeln!(stdout).unwrap();
+
+                show_error(&mut stdout, line);
+                if line > err_line {
+                    break;
+                }
+                line_start(&mut stdout, line);
+            } else {
+                let color = if byte_pos >= err_byte_pos_start && byte_pos < err_byte_pos_end {
+                    colored::Color::Red
+                } else {
+                    colored::Color::White
+                };
+                let non_tok = &source[byte_pos..byte_pos + 1].color(color);
+                write!(stdout, "{}", non_tok).unwrap();
+            }
+            byte_pos += 1;
+
+            if byte_pos >= err_byte_pos_end && line >= err_line {
+                break;
+            }
+        }
+    }
+
+    writeln!(&mut stdout).unwrap();
 }

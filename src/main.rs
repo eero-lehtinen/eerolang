@@ -1,18 +1,18 @@
-use crate::vm::Vm;
+use crate::{tokenizer::Token, vm::Vm};
 use clap::Parser;
-use log::trace;
 use std::{sync::OnceLock, time::Instant};
 
 mod ast_parser;
 mod builtins;
 mod compiler;
 mod tokenizer;
-mod vm;
 mod value;
+mod vm;
 
-
-
+// Store these for convenient error reporting purposes.
 static SOURCE: OnceLock<String> = OnceLock::new();
+static TOKENS: OnceLock<Vec<Token>> = OnceLock::new();
+
 #[derive(Parser)]
 struct Cli {
     source_file: String,
@@ -43,21 +43,19 @@ fn main() {
             std::process::exit(1);
         }
     };
-    SOURCE.set(source_code.clone()).unwrap();
+    let source_code = SOURCE.get_or_init(|| source_code);
 
     let tok_start = Instant::now();
-    let tokens = tokenizer::tokenize(&source_code, cli.tokens);
+    let tokens = tokenizer::tokenize(source_code, cli.tokens);
     let tok_end = Instant::now();
-    for token in &tokens {
-        trace!("{:?}", token);
-    }
+    let tokens = TOKENS.get_or_init(|| tokens);
 
     let parse_start = Instant::now();
-    let block = ast_parser::parse(&tokens);
+    let block = ast_parser::parse(tokens);
     let parse_end = Instant::now();
 
     let compile_start = Instant::now();
-    let compilation = compiler::compile(&block, &tokens);
+    let compilation = compiler::compile(&block, tokens);
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();

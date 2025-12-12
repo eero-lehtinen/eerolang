@@ -3,8 +3,8 @@ use std::iter::Peekable;
 use log::trace;
 
 use crate::{
-    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
-    value::Value,
+    TOKENS,
+    tokenizer::{Literal, Operator, Token, TokenKind, find_source_char_col, report_source_pos},
 };
 
 type VarName = String;
@@ -35,7 +35,7 @@ pub enum AstNodeKind {
     IfStatement(Box<AstNode>, Box<AstNode>, Option<Box<AstNode>>),
     BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
     Block(Vec<AstNode>),
-    Literal(Value),
+    Literal(Literal),
     Variable(VarName),
 }
 
@@ -324,7 +324,7 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                 kind: AstNodeKind::BinaryOp(
                     Box::new(AstNode {
                         token_idx,
-                        kind: AstNodeKind::Literal(Value::default()),
+                        kind: AstNodeKind::Literal(Literal::Number(0.)),
                     }),
                     Operator::Sub,
                     Box::new(expr),
@@ -499,19 +499,28 @@ fn fatal(msg: &str, token: &Token) -> ! {
 pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
     let char_col = find_source_char_col(token.line, token.byte_col);
     eprintln!(
-        "Error: {}: at line {}, column {}, byte {}",
+        "Error: {}: at line {}, column {}",
         msg,
         token.line + 1,
         char_col + 1,
-        token.byte_pos_start + 1
     );
-    report_source_pos(token.line, char_col, 2);
+    report_source_pos(
+        TOKENS.get().unwrap(),
+        token.line,
+        char_col,
+        token.byte_pos_start,
+        token.byte_pos_end,
+        2,
+    );
     eprintln!("{}", end_msg);
     std::process::exit(1);
 }
 
 pub fn parse(tokens: &[Token]) -> Box<AstNode> {
-    let mut iter = tokens.iter().peekable();
+    let mut iter = tokens
+        .iter()
+        .filter(|t| t.kind != TokenKind::Comment)
+        .peekable();
 
     let block = parse_block(&mut iter, true, false, false);
 

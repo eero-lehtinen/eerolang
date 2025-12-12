@@ -6,7 +6,7 @@ use log::trace;
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
-    tokenizer::{Operator, Token},
+    tokenizer::{Literal, Operator, Token},
     value::{OpError, OpResult, Value},
 };
 
@@ -436,10 +436,18 @@ impl<'a> Compilation<'a> {
         self.fatal(&format!("Variable '{}' not declared", name), node);
     }
 
-    fn make_literal(&mut self, value: &Value) -> Addr {
+    fn make_literal(&mut self, value: &Literal) -> (Addr, Option<Value>) {
+        let value = match value {
+            Literal::Number(n) => Value::number(*n),
+            Literal::String(s) => Value::string(s.clone()),
+        };
+        self.make_literal_from_value(value)
+    }
+
+    fn make_literal_from_value(&mut self, value: Value) -> (Addr, Option<Value>) {
         let addr = Addr::abs(MEMORY_SIZE - 1 - self.literals.len() as u32);
         self.literals.push((value.clone(), addr));
-        addr
+        (addr, Some(value))
     }
 
     fn push_instruction(&mut self, inst: Inst, node: &AstNode) {
@@ -466,7 +474,7 @@ impl<'a> Compilation<'a> {
         dst_suggestion: Addr,
     ) -> (Addr, Option<Value>) {
         match &expr.kind {
-            AstNodeKind::Literal(value) => (self.make_literal(value), Some(value.clone())),
+            AstNodeKind::Literal(literal) => self.make_literal(literal),
             AstNodeKind::Variable(name) => (self.variable_offset(name, expr), None),
             AstNodeKind::BinaryOp(left, op, right) => {
                 let (laddr, lval) = self.compile_expression(left, RESULT_REG1);
@@ -480,7 +488,7 @@ impl<'a> Compilation<'a> {
                             self.fatal(&binary_op_err(e, &lit_left, *op, &lit_right), expr);
                         }
                     };
-                    return (self.make_literal(&folded_value), Some(folded_value));
+                    return self.make_literal_from_value(folded_value);
                 }
 
                 self.push_instruction(Inst::binary_op(*op, dst_suggestion, laddr, raddr), expr);
