@@ -1062,52 +1062,6 @@ pub fn binary_op_err(err: OpError, left_val: &Value, op: Operator, right_val: &V
     }
 }
 
-// #[inline]
-// fn promoted(l: &OldValue, r: &OldValue) -> Option<(f64, f64)> {
-//     l.float_promoted().zip(r.float_promoted())
-// }
-//
-// macro_rules! impl_op {
-//     ($func_name:ident, $op:tt) => {
-//         #[inline]
-//         pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
-//             match (l, r) {
-//                 (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
-//                 (Value::Float(l), Value::Float(r)) => (l $op r).into(),
-//                 _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
-//                     err_fn(&binary_op_err(l, stringify!($op), r));
-//                     unreachable!()
-//                 }),
-//             }
-//         }
-//     };
-//     ($func_name:ident, $op:tt, $str_fn:expr) => {
-//         #[inline]
-//         pub fn $func_name(err_fn: impl FnOnce(&str), l: &Value, r: &Value) -> Value {
-//             match (l, r) {
-//                 (Value::Integer(l), Value::Integer(r)) => (l $op r).into(),
-//                 (Value::Float(l), Value::Float(r)) => (l $op r).into(),
-//                 (Value::String(l), Value::String(r)) => $str_fn(l, r).into(),
-//                 _ => promoted(l, r).map(|(l, r)| (l $op r).into()).unwrap_or_else(|| {
-//                     err_fn(&binary_op_err(l, stringify!($op), r));
-//                     unreachable!()
-//                 }),
-//             }
-//         }
-//     };
-// }
-//
-// impl_op!(add_op, +, |l: &Rc<String>, r: &Rc<String>| l.as_ref().to_owned() + r.as_ref());
-// impl_op!(sub_op, -);
-// impl_op!(mul_op, *);
-// impl_op!(div_op, /);
-// impl_op!(lt_op, <);
-// impl_op!(gt_op, >);
-// impl_op!(lte_op, <=);
-// impl_op!(gte_op, >=);
-// impl_op!(eq_op, ==, |l, r| l == r);
-// impl_op!(neq_op, !=, |l, r| l != r);
-
 #[inline]
 pub fn binary_op(l: &Value, op: Operator, r: &Value) -> OpResult {
     match op {
