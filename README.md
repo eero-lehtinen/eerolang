@@ -13,7 +13,7 @@ cargo install --git https://github.com/eero-lehtinen/eerolang
 Usage:
 
 ```sh
-eerolang <file>.eel
+eerolang <file.eel>
 ```
 
 ## Motivation
