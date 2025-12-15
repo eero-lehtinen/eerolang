@@ -57,7 +57,7 @@ impl Value {
         }
     }
 
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self {
             bits: 0,
             _marker: PhantomData,

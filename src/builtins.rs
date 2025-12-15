@@ -25,7 +25,7 @@ macro_rules! out_of_bounds_bail {
 
 macro_rules! fn_ok {
     () => {
-        Ok(Value::int(1))
+        Ok(Value::null())
     };
 }
 

@@ -20,10 +20,9 @@ pub struct Vm<'a> {
     ip_to_token: Vec<usize>,
     tokens: &'a [Token],
     inst_ptr: usize,
-    eval_stack: Vec<Value>,
-    eval_stack_ptr: usize,
-    call_stack: Vec<Value>,
-    call_stack_ptr: usize,
+    stack: Vec<Value>,
+    frame_ptr: usize,
+    stack_ptr: usize,
     globals: Vec<Value>,
     constants: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
@@ -46,11 +45,10 @@ impl<'a> Vm<'a> {
             ip_to_token: ctx.ip_to_token,
             tokens: ctx.tokens,
             inst_ptr: 0,
-            eval_stack: vec![const { Value::smi(0) }; STACK_SIZE as usize],
-            eval_stack_ptr: 0,
-            call_stack: vec![const { Value::smi(0) }; STACK_SIZE as usize],
-            call_stack_ptr: 0,
-            globals: vec![const { Value::smi(0) }; ctx.globals.len()],
+            stack: vec![Value::default(); STACK_SIZE as usize],
+            frame_ptr: 0,
+            stack_ptr: 0,
+            globals: vec![Value::default(); ctx.globals_count],
             constants: ctx.constants.clone(),
             builtins,
         }
@@ -80,78 +78,91 @@ impl<'a> Vm<'a> {
         unsafe { self.globals.get_unchecked(addr.0 as usize) }
     }
 
-    fn local(&self, addr: LocalAddr) -> &Value {
-        let pos = self.call_stack_ptr - addr.0 as usize;
-        debug_assert!(pos < self.eval_stack.len());
-        // SAFETY: My things are correct.
-        unsafe { self.call_stack.get_unchecked(pos) }
+    fn local_pos(&self, addr: LocalAddr) -> usize {
+        (self.frame_ptr as isize + addr.0 as isize) as usize
     }
 
-    fn pop_eval_to_local(&mut self, addr: LocalAddr) {
+    fn local(&self, addr: LocalAddr) -> &Value {
+        let pos = self.local_pos(addr);
+        debug_assert!(pos < self.stack.len());
+        // SAFETY: My things are correct.
+        unsafe { self.stack.get_unchecked(pos) }
+    }
+
+    fn pop_to_local(&mut self, addr: LocalAddr) {
         trace!(
             "Pop value {} from stack to local {}",
-            self.eval_stack(self.eval_stack_ptr).dbg_display(),
+            self.stack(self.stack_ptr).dbg_display(),
             addr
         );
-        let local_pos = self.call_stack_ptr - addr.0 as usize;
-        debug_assert!(local_pos < self.eval_stack.len());
-        debug_assert!(self.eval_stack_ptr < self.eval_stack.len());
+        let local_pos = self.local_pos(addr);
+        debug_assert!(local_pos < self.stack.len());
+        debug_assert!(self.stack_ptr < self.stack.len());
+        debug_assert!(local_pos != self.stack_ptr);
         // SAFETY: My things are correct.
         unsafe {
             std::ptr::swap(
-                self.call_stack.get_unchecked_mut(local_pos) as *mut Value,
-                self.eval_stack.get_unchecked_mut(self.eval_stack_ptr) as *mut Value,
+                self.stack.get_unchecked_mut(local_pos) as *mut Value,
+                self.stack.get_unchecked_mut(self.stack_ptr) as *mut Value,
             );
         }
-        self.eval_stack_ptr -= 1;
+        self.stack_ptr -= 1;
     }
 
-    fn pop_eval_to_global(&mut self, addr: GlobalAddr) {
+    fn pop_to_global(&mut self, addr: GlobalAddr) {
         trace!(
             "Pop value {} from stack to global {}",
-            self.eval_stack(self.eval_stack_ptr).dbg_display(),
+            self.stack(self.stack_ptr).dbg_display(),
             addr
         );
         let global_pos = addr.0 as usize;
         debug_assert!(global_pos < self.globals.len());
-        debug_assert!(self.eval_stack_ptr < self.eval_stack.len());
+        debug_assert!(self.stack_ptr < self.stack.len());
         // SAFETY: My things are correct.
         unsafe {
             std::ptr::swap(
                 self.globals.get_unchecked_mut(global_pos) as *mut Value,
-                self.eval_stack.get_unchecked_mut(self.eval_stack_ptr) as *mut Value,
+                self.stack.get_unchecked_mut(self.stack_ptr) as *mut Value,
             );
         }
-        self.eval_stack_ptr -= 1;
+        self.stack_ptr -= 1;
     }
 
-    fn eval_stack(&self, offset: usize) -> &Value {
-        let pos = self.eval_stack_ptr - offset;
-        debug_assert!(pos < self.eval_stack.len());
+    fn stack(&self, offset: usize) -> &Value {
+        let pos = self.stack_ptr - offset;
+        debug_assert!(pos < self.stack.len());
         // SAFETY: My things are correct.
-        unsafe { self.eval_stack.get_unchecked(pos) }
+        unsafe { self.stack.get_unchecked(pos) }
     }
 
-    fn eval_stack_mut(&mut self, offset: usize) -> &mut Value {
-        let pos = self.eval_stack_ptr - offset;
-        debug_assert!(pos < self.eval_stack.len());
+    fn stack_mut(&mut self, offset: usize) -> &mut Value {
+        let pos = self.stack_ptr - offset;
+        debug_assert!(pos < self.stack.len());
         // SAFETY: My things are correct.
-        unsafe { self.eval_stack.get_unchecked_mut(pos) }
+        unsafe { self.stack.get_unchecked_mut(pos) }
     }
 
-    fn push_eval(&mut self, value: Value) {
-        self.eval_stack_ptr += 1;
-        if let Some(v) = self.eval_stack.get_mut(self.eval_stack_ptr) {
+    fn pop(&mut self) -> Value {
+        let pos = self.stack_ptr;
+        self.stack_ptr -= 1;
+        debug_assert!(pos < self.stack.len());
+        // SAFETY: My things are correct.
+        unsafe { self.stack.get_unchecked(pos).clone() }
+    }
+
+    fn push(&mut self, value: Value) {
+        self.stack_ptr += 1;
+        if let Some(v) = self.stack.get_mut(self.stack_ptr) {
             *v = value;
         } else {
-            self.fatal("Evaluation stack overflow");
+            self.fatal("Stack overflow");
         }
     }
 
     pub fn run(&mut self, step_through: bool) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
-                let r = self.eval_stack(0);
+                let r = self.stack(0);
                 if $op == Operator::Div {
                     if let Some(f) = r.as_number() {
                         if f == 0.0 {
@@ -159,7 +170,7 @@ impl<'a> Vm<'a> {
                         }
                     }
                 }
-                let l = self.eval_stack(1);
+                let l = self.stack(1);
                 let res = match l.$fn(r) {
                     Some(v) => v,
                     None => {
@@ -173,8 +184,8 @@ impl<'a> Vm<'a> {
                     r.dbg_display(),
                     res.dbg_display(),
                 );
-                self.eval_stack_ptr -= 1;
-                self.eval_stack_mut(0).clone_from(&res);
+                self.stack_ptr -= 1;
+                *self.stack_mut(0) = res;
             }};
         }
 
@@ -191,45 +202,41 @@ impl<'a> Vm<'a> {
                 Inst::LoadConst(caddr) => {
                     let value = self.constant(caddr);
                     trace!(
-                        "Push constant {} from {} to eval stack",
+                        "Push constant {} from {} to stack",
                         value.dbg_display(),
                         caddr,
                     );
-                    self.push_eval(value.clone());
+                    self.push(value.clone());
                 }
                 Inst::LoadGlobal(gaddr) => {
                     let value = self.global(gaddr);
                     trace!(
-                        "Push global {} from {} to eval stack",
+                        "Push global {} from {} to stack",
                         value.dbg_display(),
                         gaddr
                     );
-                    self.push_eval(value.clone());
+                    self.push(value.clone());
                 }
                 Inst::LoadLocal(laddr) => {
                     let value = self.local(laddr);
-                    trace!(
-                        "Push local {} from {} to eval stack",
-                        value.dbg_display(),
-                        laddr
-                    );
-                    self.push_eval(value.clone());
+                    trace!("Push local {} from {} to stack", value.dbg_display(), laddr);
+                    self.push(value.clone());
                 }
                 Inst::StoreGlobal(gaddr) => {
-                    self.pop_eval_to_global(gaddr);
+                    self.pop_to_global(gaddr);
                 }
                 Inst::StoreLocal(laddr) => {
-                    self.pop_eval_to_local(laddr);
+                    self.pop_to_local(laddr);
                 }
                 Inst::Pop => {
                     trace!(
-                        "Pop value {} from eval stack",
-                        self.eval_stack(self.eval_stack_ptr).dbg_display()
+                        "Pop value {} from stack",
+                        self.stack(self.stack_ptr).dbg_display()
                     );
-                    self.eval_stack_ptr -= 1;
+                    self.stack_ptr -= 1;
                 }
                 Inst::InitMapIter => {
-                    let maybe_map = self.eval_stack(0);
+                    let maybe_map = self.stack(0);
                     match maybe_map.as_value_ref() {
                         ValueRef::Map(map_rc) => {
                             let mut map = map_rc.borrow_mut();
@@ -252,11 +259,11 @@ impl<'a> Vm<'a> {
                             trace!("InitMapIter called on non-map value, ignoring");
                         }
                     }
-                    self.eval_stack_ptr -= 1;
+                    self.stack_ptr -= 1;
                 }
                 Inst::LoadKey => {
-                    let iterable = self.eval_stack(1);
-                    let index_value = self.eval_stack(0);
+                    let iterable = self.stack(1);
+                    let index_value = self.stack(0);
                     let Some(index) = index_value.as_int() else {
                         self.fatal(&format!(
                             "Expected (int) as index, got {:?}",
@@ -292,9 +299,9 @@ impl<'a> Vm<'a> {
                             iterable.dbg_display()
                         )),
                     };
-                    self.eval_stack_ptr -= 1;
+                    self.stack_ptr -= 1;
 
-                    *self.eval_stack_mut(0) = match key {
+                    *self.stack_mut(0) = match key {
                         Some(k) => {
                             trace!("LoadKey: found key: {:?}", k.dbg_display());
                             k
@@ -306,26 +313,24 @@ impl<'a> Vm<'a> {
                     };
                 }
                 Inst::LoadItem => {
-                    match builtin_get(
-                        &self.eval_stack[self.eval_stack_ptr - 1..=self.eval_stack_ptr],
-                    ) {
+                    match builtin_get(&self.stack[self.stack_ptr - 1..=self.stack_ptr]) {
                         Ok(value) => {
                             trace!("LoadKey: loaded value: {:?}", value.dbg_display());
-                            self.eval_stack_ptr -= 1;
-                            self.eval_stack_mut(0).clone_from(&value);
+                            self.stack_ptr -= 1;
+                            self.stack_mut(0).clone_from(&value);
                         }
                         Err(e) => self.fatal(&format!("Wrong value in for loop iterable: {}", e)),
                     }
                 }
                 Inst::Incr => {
-                    let v = self.eval_stack(0);
+                    let v = self.stack(0);
                     if let Some(i) = v.as_int() {
                         trace!(
                             "Increment value {} to {}",
                             v.dbg_display(),
                             Value::int(i + 1).dbg_display()
                         );
-                        *self.eval_stack_mut(0) = Value::int(i + 1);
+                        *self.stack_mut(0) = Value::int(i + 1);
                     } else {
                         self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
                     }
@@ -348,22 +353,68 @@ impl<'a> Vm<'a> {
                     debug_assert!((index as usize) < self.builtins.len());
                     // SAFETY: non-existent functions should be hard to call
                     let func_impl = unsafe { self.builtins.get_unchecked(index as usize).0 };
-                    let arg_values = &mut self.eval_stack
-                        [self.eval_stack_ptr - args as usize + 1..=self.eval_stack_ptr];
+                    let arg_values =
+                        &mut self.stack[self.stack_ptr - args as usize + 1..=self.stack_ptr];
                     let result = match func_impl(arg_values) {
                         Ok(v) => v,
                         Err(e) => self.fatal(&format!("Error in function call: {}", e)),
                     };
-                    self.eval_stack_ptr -= args as usize;
-                    self.push_eval(result);
-                    trace!("  -> result: {:?}", self.eval_stack(0).dbg_display());
+                    self.stack_ptr -= args as usize;
+                    self.push(result);
+                    trace!("  -> result: {:?}", self.stack(0).dbg_display());
+                }
+                Inst::Call(fn_ip, nlocals) => {
+                    let return_ip = self.inst_ptr + 1;
+                    self.push(Value::int(return_ip as i64));
+                    self.push(Value::int(self.frame_ptr as i64));
+                    self.frame_ptr = self.stack_ptr;
+                    self.stack_ptr += nlocals as usize;
+                    self.inst_ptr = fn_ip as usize;
+                    trace!(
+                        "Call function at {} with {} locals, return IP {}, new frame ptr {}",
+                        fn_ip, nlocals, return_ip, self.frame_ptr
+                    );
+                }
+                Inst::Return(nargs) => {
+                    let ret_value = self.pop();
+                    dbg!(&ret_value, self.frame_ptr, nargs, nargs as usize);
+                    self.stack_ptr = self.frame_ptr - nargs as usize - 2;
+                    debug_assert!(self.stack_ptr < self.stack.len());
+                    trace!(
+                        "Return from function to IP {}, restoring frame ptr {}. Popped {} args, return value {}",
+                        self.stack[self.frame_ptr - 1].dbg_display(),
+                        self.stack[self.frame_ptr].dbg_display(),
+                        nargs,
+                        ret_value.dbg_display()
+                    );
+                    // SAFETY: My things are correct.
+                    let old_frame_ptr = unsafe { self.stack.get_unchecked(self.frame_ptr) };
+                    let frame_ptr = match old_frame_ptr.as_int() {
+                        Some(fp) => fp as usize,
+                        None => self.fatal(&format!(
+                            "Corrupted frame pointer on return: {:?}",
+                            old_frame_ptr.dbg_display()
+                        )),
+                    };
+                    // SAFETY: My things are correct.
+                    let return_ip_value = unsafe { self.stack.get_unchecked(self.frame_ptr - 1) };
+                    let return_ip = match return_ip_value.as_int() {
+                        Some(addr) => addr as usize,
+                        None => self.fatal(&format!(
+                            "Corrupted return address on return: {:?}",
+                            return_ip_value.dbg_display()
+                        )),
+                    };
+                    self.frame_ptr = frame_ptr;
+                    self.push(ret_value);
+                    self.inst_ptr = return_ip;
                 }
                 Inst::Jump(target) => {
                     trace!("Jump from {} to {}", self.inst_ptr, target);
                     self.inst_ptr = target as usize;
                 }
                 Inst::JumpIfNull(target) => {
-                    let cond_value = self.eval_stack(0);
+                    let cond_value = self.stack(0);
                     trace!(
                         "JumpIfNull from {} to {} if {} is null",
                         self.inst_ptr,
@@ -373,10 +424,10 @@ impl<'a> Vm<'a> {
                     if cond_value.is_null() {
                         self.inst_ptr = target as usize;
                     }
-                    self.eval_stack_ptr -= 1;
+                    self.stack_ptr -= 1;
                 }
                 Inst::JumpIfFalsy(target) => {
-                    let cond_value = self.eval_stack(0);
+                    let cond_value = self.stack(0);
                     trace!(
                         "JumpIfFalsy from {} to {} if {} is falsy",
                         self.inst_ptr,
@@ -388,7 +439,7 @@ impl<'a> Vm<'a> {
                     }
                 }
                 Inst::JumpIfTruthy(target) => {
-                    let cond_value = self.eval_stack(0);
+                    let cond_value = self.stack(0);
                     trace!(
                         "JumpIfTruthy from {} to {} if {} is truthy",
                         self.inst_ptr,
@@ -426,23 +477,17 @@ impl<'a> Vm<'a> {
         );
 
         info!(
-            "Eval stack: {}",
-            (0..=self.eval_stack_ptr)
-                .map(|i| self.eval_stack(self.eval_stack_ptr - i).dbg_display())
+            "Stack: {}",
+            (1..=self.stack_ptr)
+                .map(|i| self.stack[i].dbg_display())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        info!("Eval Stack Pointer: {}", self.eval_stack_ptr);
 
         info!(
-            "Call stack: {}",
-            (0..self.call_stack_ptr)
-                .map(|i| self.call_stack[i].dbg_display())
-                .collect::<Vec<_>>()
-                .join(", ")
+            "Stack Ptr: {}, Frame Ptr: {}",
+            self.stack_ptr, self.frame_ptr
         );
-
-        info!("Call Stack Pointer: {}", self.call_stack_ptr);
 
         info!(
             "Globals: {}",

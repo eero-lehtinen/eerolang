@@ -1,17 +1,17 @@
-use foldhash::{HashMap, HashMapExt};
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use log::trace;
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
-    instructions::{Addr, ConstAddr, GlobalAddr, Inst},
+    instructions::{Addr, ConstAddr, GlobalAddr, Inst, LocalAddr},
     tokenizer::{Literal, Operator, Token},
     value::{OpResult, Value},
 };
 
 #[derive(Debug)]
 struct ScopeData<'a> {
-    declarations: Vec<&'a str>,
+    declarations: Vec<(&'a str, Addr)>,
     /// Stored at the root of the scope stack for function scopes.
     fn_data: Option<FnData>,
     loop_data: Option<LoopData>,
@@ -20,8 +20,8 @@ struct ScopeData<'a> {
 #[derive(Debug, Default)]
 struct FnData {
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
-    /// Holds (name, scope depth)
-    locals: Vec<(String, u32)>,
+    locals_count: u32,
+    args: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -35,19 +35,18 @@ pub struct Compilation<'a> {
     /// Holds literal values used in the program.
     pub constants: Vec<Value>,
     /// Keeps track of variables declared outside of functions to figure out how much space to
-    /// allocate at the start for globals (globals can also be within loops and if blocks).
-    /// Holds (name, scope_depth).
-    pub globals: Vec<(String, u32)>,
+    /// allocate at the start for globals.
+    pub globals_count: usize,
     pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
-    pub functions: HashMap<String, (u32, ArgsRequred)>,
+    /// Holds start ip, arg reguirements, local count
+    pub functions: HashMap<String, (u32, ArgsRequred, u32)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
     scopes: Vec<ScopeData<'a>>,
-    cur_stack_ptr_offset: u32,
 }
 
-const ZERO_CONST_ADDR: ConstAddr = ConstAddr(0);
-const NEG_ONE_ADDR: ConstAddr = ConstAddr(1);
+const NULL_CONST_ADDR: ConstAddr = ConstAddr(0);
+const ZERO_CONST_ADDR: ConstAddr = ConstAddr(1);
 
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
@@ -57,14 +56,13 @@ impl<'a> Compilation<'a> {
         }
         Compilation {
             instructions: Vec::new(),
-            constants: vec![const { Value::smi(0) }, const { Value::smi(-1) }],
-            globals: Vec::new(),
+            constants: vec![const { Value::null() }, const { Value::smi(0) }],
+            globals_count: 0,
             builtins,
             functions: HashMap::new(),
             tokens,
             ip_to_token: Vec::new(),
             scopes: Vec::new(),
-            cur_stack_ptr_offset: 0,
         }
     }
 
@@ -81,29 +79,44 @@ impl<'a> Compilation<'a> {
         &mut self.instructions[ip as usize]
     }
 
-    fn declare_variable(&mut self, name: &'a str, node: &'a AstNode) -> Addr {
-        if let Some(_) = self.fn_data() {
-            todo!();
-        } else {
-            let depth = (self.scopes.len() - 1) as u32;
+    fn declare_argument(&mut self, name: &'a str, total: u32, node: &'a AstNode) -> Addr {
+        let decls = &mut self
+            .scopes
+            .last_mut()
+            .expect("At least one scope exists")
+            .declarations;
 
-            if self.globals.iter().any(|(n, d)| n == name && *d == depth) {
-                self.fatal(
-                    &format!("Variable '{}' already declared in this scope", name),
-                    node,
-                );
-            }
-
-            self.scopes
-                .last_mut()
-                .expect("At least one scope exists")
-                .declarations
-                .push(name);
-
-            let offset = self.globals.len() as u32;
-            self.globals.push((name.to_string(), depth));
-            Addr::Global(GlobalAddr(offset))
+        if decls.iter().any(|(n, _)| *n == name) {
+            self.fatal(&format!("Duplicate argument '{}'", name), node);
         }
+        let addr = Addr::Local(LocalAddr(-(total as i32) - 1 + decls.len() as i32));
+        decls.push((name, addr));
+        addr
+    }
+
+    fn declare_variable(&mut self, name: &'a str, node: &'a AstNode) -> Addr {
+        let addr = if let Some(fn_data) = self.fn_data() {
+            fn_data.locals_count += 1;
+            Addr::Local(LocalAddr(fn_data.locals_count as i32 - 1))
+        } else {
+            self.globals_count += 1;
+            Addr::Global(GlobalAddr(self.globals_count as u32 - 1))
+        };
+
+        let decls = &mut self
+            .scopes
+            .last_mut()
+            .expect("At least one scope exists")
+            .declarations;
+
+        if decls.iter().any(|(n, _)| *n == name) {
+            self.fatal(
+                &format!("Variable '{}' already declared in this scope", name),
+                node,
+            );
+        }
+        decls.push((name, addr));
+        addr
     }
 
     fn variable_addr(&mut self, name: &str, node: &AstNode, to_decl: Option<&str>) -> Addr {
@@ -119,17 +132,10 @@ impl<'a> Compilation<'a> {
             0
         };
 
-        for (depth, scope) in self.scopes.iter().enumerate().rev().skip(skip_scope) {
-            for decl_name in scope.declarations.iter() {
+        for scope in self.scopes.iter().rev().skip(skip_scope) {
+            for (decl_name, addr) in scope.declarations.iter() {
                 if *decl_name == name {
-                    let Some(idx) = self
-                        .globals
-                        .iter()
-                        .position(|(n, d)| n == name && *d as usize == depth)
-                    else {
-                        self.fatal(&format!("Variable '{}' not declared", name), node);
-                    };
-                    return Addr::Global(GlobalAddr(idx as u32));
+                    return *addr;
                 }
             }
         }
@@ -238,27 +244,37 @@ impl<'a> Compilation<'a> {
         // over it to make top level code work correctly.
         self.push_instruction(Inst::Nop, node);
 
-        // let fn_start_ip = self.cur_inst_ptr();
-        //
-        // let args_required = ArgsRequred::Exact(args.len() as u32);
-        // self.functions
-        //     .insert(name.clone(), (fn_start_ip, args_required));
-        //
-        // self.block_start(body, Some(node), false);
-        //
-        // self.compile_block(body);
-        //
-        // // Default return value is 1
-        // self.push_instruction(Inst::load_int(FN_RETURN_VALUE_REG, 1), node);
-        //
-        // // Clean up stack frame.
-        // self.block_end(body);
-        //
-        // // Jump back to return address.
-        // self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
-        //
-        // let fn_end_ip = self.cur_inst_ptr();
-        // self.inst_mut(fn_skip_jump_ip).set_jump_target(fn_end_ip);
+        let fn_start_ip = self.cur_inst_ptr();
+
+        let args_required = ArgsRequred::Exact(args.len() as u32);
+
+        self.block_start(body, Some(node), false);
+
+        for arg in args {
+            let arg_name = arg
+                .get_var_name()
+                .expect("Function argument should be a variable");
+            self.declare_argument(arg_name, args.len() as u32, arg);
+        }
+
+        self.compile_block(body);
+
+        let locals_count = self
+            .fn_data()
+            .expect("Function data should exist in function scope")
+            .locals_count;
+
+        self.functions
+            .insert(name.clone(), (fn_start_ip, args_required, locals_count));
+
+        self.block_end();
+
+        // Returns null by default
+        self.push_instruction(Inst::LoadConst(NULL_CONST_ADDR), node);
+        self.push_instruction(Inst::Return(args.len() as u32), node);
+
+        let fn_end_ip = self.cur_inst_ptr();
+        *self.inst_mut(fn_skip_jump_ip) = Inst::Jump(fn_end_ip);
     }
 
     fn compile_return(&mut self, node: &'a AstNode) {
@@ -317,40 +333,20 @@ impl<'a> Compilation<'a> {
                 Inst::CallBuiltin(func_index as u32, args.len() as u32),
                 node,
             );
+        } else if let Some(&(fn_start_ip, args_req, locals_count)) = self.functions.get(name) {
+            if !args_req.matches(args.len()) {
+                unexpected_args!(args_req);
+            }
+
+            self.push_instruction(Inst::Call(fn_start_ip, locals_count), node);
         } else {
-            todo!()
+            self.fatal(&format!("Undefined function: {}", name), node);
         }
 
         if discard_returned {
             // Discard return value
             self.push_instruction(Inst::Pop, node);
         }
-
-        // } else if let Some(&(fn_start_ip, args_req)) = self.functions.get(name) {
-        //     if !args_req.matches(args.len()) {
-        //         unexpected_args!(args_req);
-        //     }
-        //
-        //     // Store return address (placeholder)
-        //     let load_ret_addr_ip = self.cur_inst_ptr();
-        //     self.push_instruction(Inst::nop(), node);
-        //
-        //     // Jump to the function.
-        //     self.push_instruction(Inst::jump(fn_start_ip), node);
-        //
-        //     // Store return address now that we know it.
-        //     *self.inst_mut(load_ret_addr_ip) =
-        //         Inst::load_int(FN_CALL_RETURN_ADDR_REG, self.cur_inst_ptr() as i32);
-        // } else {
-        //     self.fatal(&format!("Undefined function: {}", name), node);
-        // }
-        //
-        // // Restore temporaries after the function call.
-        // self.push_instruction(Inst::restore_regs(save_args_count), node);
-        // self.cur_stack_ptr_offset -= save_regs_count + save_args_count;
-        //
-        // // Load return value to the correct location.
-        // self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
     }
 
     // If the iterable is an expression, it needs to be stored somwhere.
@@ -503,11 +499,27 @@ impl<'a> Compilation<'a> {
     }
 
     fn block_start(&mut self, node: &'a AstNode, fn_node: Option<&'a AstNode>, is_loop: bool) {
-        let AstNodeKind::Block(nodes) = &node.kind else {
+        let AstNodeKind::Block(_) = &node.kind else {
             self.fatal("Expected block node", node);
         };
 
-        let fn_data = fn_node.map(|_| FnData::default());
+        let fn_data = if let Some(fn_node) = fn_node {
+            let AstNodeKind::FunctionDefinition(_, args, _) = &fn_node.kind else {
+                self.fatal("Expected function definition node", fn_node);
+            };
+            let mut fn_data = FnData::default();
+
+            for arg in args {
+                let arg_name = arg
+                    .get_var_name()
+                    .expect("Function argument should be a variable");
+                fn_data.args.push(arg_name.to_string());
+            }
+            Some(fn_data)
+        } else {
+            None
+        };
+
         let loop_data = is_loop.then(|| LoopData {
             breaks: Vec::new(),
             continues: Vec::new(),
@@ -535,12 +547,12 @@ impl<'a> Compilation<'a> {
         panic!("No loop data found in current scopes");
     }
 
-    fn fn_data(&self) -> Option<&FnData> {
+    fn fn_data(&mut self) -> Option<&mut FnData> {
         self.scopes
-            .first()
-            .expect("At least one scope exists")
+            .get_mut(1)
+            .expect("At least two scopes exist for function scope")
             .fn_data
-            .as_ref()
+            .as_mut()
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {

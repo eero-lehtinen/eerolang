@@ -9,7 +9,7 @@ pub struct ConstAddr(pub u32);
 pub struct GlobalAddr(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalAddr(pub u32);
+pub struct LocalAddr(pub i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addr {
@@ -71,7 +71,12 @@ pub enum Inst {
     Gte,
     Eq,
     Neq,
-    CallBuiltin(u32, u32), // function index, arg count
+    // function index, arg count
+    CallBuiltin(u32, u32),
+    // target instruction pointer, locals count
+    Call(u32, u32),
+    // args count
+    Return(u32),
     Jump(u32),
     JumpIfNull(u32),
     JumpIfFalsy(u32),
@@ -140,6 +145,10 @@ impl Display for Inst {
             Inst::CallBuiltin(func_index, arg_count) => {
                 write!(f, "CALL_BUILTIN {} {}", func_index, arg_count)
             }
+            Inst::Call(func_index, arg_count) => {
+                write!(f, "CALL {} {}", func_index, arg_count)
+            }
+            Inst::Return(arg_count) => write!(f, "RETURN {}", arg_count),
             Inst::Jump(target) => write!(f, "JUMP {}", target),
             Inst::JumpIfNull(target) => write!(f, "JUMP_IF_NULL {}", target),
             Inst::JumpIfFalsy(target) => write!(f, "JUMP_IF_FALSY {}", target),
