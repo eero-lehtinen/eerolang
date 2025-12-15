@@ -1,4 +1,4 @@
-use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
@@ -247,6 +247,8 @@ impl<'a> Compilation<'a> {
         let fn_start_ip = self.cur_inst_ptr();
 
         let args_required = ArgsRequred::Exact(args.len() as u32);
+        self.functions
+            .insert(name.clone(), (fn_start_ip, args_required, 0));
 
         self.block_start(body, Some(node), false);
 
@@ -263,9 +265,7 @@ impl<'a> Compilation<'a> {
             .fn_data()
             .expect("Function data should exist in function scope")
             .locals_count;
-
-        self.functions
-            .insert(name.clone(), (fn_start_ip, args_required, locals_count));
+        self.functions.get_mut(name).unwrap().2 = locals_count;
 
         self.block_end();
 
@@ -278,23 +278,16 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_return(&mut self, node: &'a AstNode) {
-        todo!();
-        // let AstNodeKind::Return(expr) = &node.kind else {
-        //     unreachable!();
-        // };
-        // let (expr_addr, _) = self.compile_expression(expr, FN_RETURN_VALUE_REG, None);
-        // if expr_addr != FN_RETURN_VALUE_REG {
-        //     self.push_instruction(Inst::load_addr(FN_RETURN_VALUE_REG, expr_addr), node);
-        // }
-        //
-        // // Clean up stack frame.
-        // let sub_sp = self.cur_stack_ptr_offset - self.fn_data().frame_ptr;
-        // if sub_sp > 0 {
-        //     self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
-        // }
-        //
-        // // Jump back to return address.
-        // self.push_instruction(Inst::jump_addr(FN_CALL_RETURN_ADDR_REG), node);
+        let AstNodeKind::Return(expr) = &node.kind else {
+            unreachable!();
+        };
+        self.compile_expression(expr, None);
+        let args_count = self
+            .fn_data()
+            .expect("Function data should exist in function scope")
+            .args
+            .len();
+        self.push_instruction(Inst::Return(args_count as u32), node);
     }
 
     fn compile_function_args(&mut self, args: &[AstNode]) {

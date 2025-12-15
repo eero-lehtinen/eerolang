@@ -377,7 +377,6 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Return(nargs) => {
                     let ret_value = self.pop();
-                    dbg!(&ret_value, self.frame_ptr, nargs, nargs as usize);
                     self.stack_ptr = self.frame_ptr - nargs as usize - 2;
                     debug_assert!(self.stack_ptr < self.stack.len());
                     trace!(
