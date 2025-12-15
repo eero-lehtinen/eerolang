@@ -12,29 +12,50 @@ type VarName = String;
 
 #[derive(Debug)]
 pub enum AstNodeKind {
-    DeclareAssign(VarName, Box<AstNode>),
-    Assign(VarName, Box<AstNode>),
+    DeclareAssign {
+        name: VarName,
+        expr: Box<AstNode>,
+    },
+    Assign {
+        name: VarName,
+        expr: Box<AstNode>,
+    },
     /// name, arguments
-    FunctionCall(VarName, Vec<AstNode>),
-    /// name, parameters, body
-    FunctionDefinition(VarName, Vec<AstNode>, Box<AstNode>),
-    Return(Box<AstNode>),
-    /// index, key, item, list, block
-    ForLoop(
-        Option<Box<AstNode>>,
-        Option<Box<AstNode>>,
-        Box<AstNode>,
-        Box<AstNode>,
-    ),
-    /// condition, block
-    WhileLoop(Box<AstNode>, Box<AstNode>),
-    /// For loop and function parameter declarations.
+    FunctionCall {
+        name: VarName,
+        args: Vec<AstNode>,
+    },
+    FunctionDefinition {
+        name: VarName,
+        params: Vec<AstNode>,
+        body: Box<AstNode>,
+    },
+    Return {
+        expr: Box<AstNode>,
+    },
+    ForLoop {
+        key: Option<Box<AstNode>>,
+        item: Option<Box<AstNode>>,
+        iterable: Box<AstNode>,
+        body: Box<AstNode>,
+    },
+    WhileLoop {
+        condition: Box<AstNode>,
+        body: Box<AstNode>,
+    },
     Declaration(VarName),
     Continue,
     Break,
-    /// condition, then block, else block
-    IfStatement(Box<AstNode>, Box<AstNode>, Option<Box<AstNode>>),
-    BinaryOp(Box<AstNode>, Operator, Box<AstNode>),
+    IfStatement {
+        condition: Box<AstNode>,
+        body: Box<AstNode>,
+        else_body: Option<Box<AstNode>>,
+    },
+    BinaryOp {
+        left: Box<AstNode>,
+        op: Operator,
+        right: Box<AstNode>,
+    },
     Block(Vec<AstNode>),
     Literal(Literal),
     Variable(VarName),
@@ -49,8 +70,8 @@ pub struct AstNode {
 impl AstNode {
     pub fn get_var_name(&self) -> Option<&str> {
         match &self.kind {
-            AstNodeKind::DeclareAssign(name, _)
-            | AstNodeKind::Assign(name, _)
+            AstNodeKind::DeclareAssign { name, .. }
+            | AstNodeKind::Assign { name, .. }
             | AstNodeKind::Variable(name)
             | AstNodeKind::Declaration(name) => Some(name),
             _ => None,
@@ -112,7 +133,10 @@ fn parse_function_call<'a, I: TokIter<'a>>(
     });
     Some(AstNode {
         token_idx: ident_token_idx,
-        kind: AstNodeKind::FunctionCall(ident.into(), args),
+        kind: AstNodeKind::FunctionCall {
+            name: ident.into(),
+            args,
+        },
     })
 }
 
@@ -194,7 +218,11 @@ fn parse_function_definition<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> AstN
 
     AstNode {
         token_idx,
-        kind: AstNodeKind::FunctionDefinition(func_name.clone(), params, body),
+        kind: AstNodeKind::FunctionDefinition {
+            name: func_name.clone(),
+            params,
+            body,
+        },
     }
 }
 
@@ -256,7 +284,12 @@ fn parse_for_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, in_function: bool)
 
     AstNode {
         token_idx,
-        kind: AstNodeKind::ForLoop(key, item, Box::new(collection_expr), body),
+        kind: AstNodeKind::ForLoop {
+            key,
+            item,
+            iterable: Box::new(collection_expr),
+            body,
+        },
     }
 }
 
@@ -276,7 +309,10 @@ fn parse_while_loop<'a, I: TokIter<'a>>(iter: &mut Peekable<I>, in_function: boo
 
     AstNode {
         token_idx,
-        kind: AstNodeKind::WhileLoop(Box::new(expr), body),
+        kind: AstNodeKind::WhileLoop {
+            condition: Box::new(expr),
+            body,
+        },
     }
 }
 
@@ -295,10 +331,10 @@ fn parse_if_statement<'a, I: TokIter<'a>>(
             iter.peek().unwrap(),
         );
     });
-    let block = parse_block(iter, false, in_loop, in_function);
+    let body = parse_block(iter, false, in_loop, in_function);
 
     let else_token = iter.peek();
-    let else_block = else_token
+    let else_body = else_token
         .is_some_and(|t| t.kind == TokenKind::KeywordElse)
         .then(|| {
             iter.next();
@@ -306,7 +342,11 @@ fn parse_if_statement<'a, I: TokIter<'a>>(
         });
     AstNode {
         token_idx,
-        kind: AstNodeKind::IfStatement(Box::new(condition), block, else_block),
+        kind: AstNodeKind::IfStatement {
+            condition: Box::new(condition),
+            body,
+            else_body,
+        },
     }
 }
 
@@ -322,14 +362,14 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
             });
             Some(AstNode {
                 token_idx,
-                kind: AstNodeKind::BinaryOp(
-                    Box::new(AstNode {
+                kind: AstNodeKind::BinaryOp {
+                    left: Box::new(AstNode {
                         token_idx,
                         kind: AstNodeKind::Literal(Literal::Number(0.)),
                     }),
-                    Operator::Sub,
-                    Box::new(expr),
-                ),
+                    op: Operator::Sub,
+                    right: Box::new(expr),
+                },
             })
         }
         TokenKind::Literal(lit) => {
@@ -414,7 +454,11 @@ fn parse_expression_impl<'a, I: TokIter<'a>>(
 
         left = AstNode {
             token_idx,
-            kind: AstNodeKind::BinaryOp(Box::new(left), op, Box::new(right)),
+            kind: AstNodeKind::BinaryOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            },
         }
     }
 
@@ -440,7 +484,10 @@ fn parse_statement<'a, I: TokIter<'a>>(
                     let expr = parse_expression(iter).unwrap();
                     AstNode {
                         token_idx: ident_token_idx,
-                        kind: AstNodeKind::DeclareAssign(ident.clone(), Box::new(expr)),
+                        kind: AstNodeKind::DeclareAssign {
+                            name: ident.clone(),
+                            expr: Box::new(expr),
+                        },
                     }
                 }
                 TokenKind::Assign => {
@@ -449,7 +496,10 @@ fn parse_statement<'a, I: TokIter<'a>>(
                     let expr = parse_expression(iter).unwrap();
                     AstNode {
                         token_idx: ident_token_idx,
-                        kind: AstNodeKind::Assign(ident.clone(), Box::new(expr)),
+                        kind: AstNodeKind::Assign {
+                            name: ident.clone(),
+                            expr: Box::new(expr),
+                        },
                     }
                 }
                 _ => {
@@ -468,7 +518,9 @@ fn parse_statement<'a, I: TokIter<'a>>(
             });
             AstNode {
                 token_idx: return_token.index,
-                kind: AstNodeKind::Return(Box::new(expr)),
+                kind: AstNodeKind::Return {
+                    expr: Box::new(expr),
+                },
             }
         }
         TokenKind::KeywordFor => parse_for_loop(iter, in_function),

@@ -21,7 +21,7 @@ struct ScopeData<'a> {
 struct FnData {
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
     locals_count: u32,
-    args: Vec<String>,
+    params: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -161,8 +161,8 @@ impl<'a> Compilation<'a> {
 
     fn compile_assignment(&mut self, node: &'a AstNode) {
         let (var, expr, decl) = match &node.kind {
-            AstNodeKind::DeclareAssign(var, expr) => (var, expr, true),
-            AstNodeKind::Assign(var, expr) => (var, expr, false),
+            AstNodeKind::DeclareAssign { name, expr } => (name, expr, true),
+            AstNodeKind::Assign { name, expr } => (name, expr, false),
             _ => unreachable!(),
         };
         let var_addr = if decl {
@@ -184,7 +184,7 @@ impl<'a> Compilation<'a> {
                 let addr = self.variable_addr(name, expr, to_decl);
                 self.push_instruction(Inst::load(addr), expr);
             }
-            AstNodeKind::BinaryOp(left, op, right) => {
+            AstNodeKind::BinaryOp { left, op, right } => {
                 self.compile_expression(left, to_decl);
                 if *op == Operator::And || *op == Operator::Or {
                     let short_circuit_ip = self.cur_inst_ptr();
@@ -201,7 +201,7 @@ impl<'a> Compilation<'a> {
                     self.push_instruction(Inst::binary_op(*op), expr);
                 }
             }
-            AstNodeKind::FunctionCall(..) => {
+            AstNodeKind::FunctionCall { .. } => {
                 self.compile_function_call(expr, false);
             }
             _ => todo!(),
@@ -209,7 +209,7 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_function_definition(&mut self, node: &'a AstNode) {
-        let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
+        let AstNodeKind::FunctionDefinition { name, params, body } = &node.kind else {
             unreachable!();
         };
 
@@ -231,17 +231,17 @@ impl<'a> Compilation<'a> {
 
         let fn_start_ip = self.cur_inst_ptr();
 
-        let args_required = ArgsRequred::Exact(args.len() as u32);
+        let args_required = ArgsRequred::Exact(params.len() as u32);
         self.functions
             .insert(name.clone(), (fn_start_ip, args_required, 0));
 
         self.block_start(body, Some(node), false);
 
-        for arg in args {
+        for arg in params {
             let arg_name = arg
                 .get_var_name()
                 .expect("Function argument should be a variable");
-            self.declare_argument(arg_name, args.len() as u32, arg);
+            self.declare_argument(arg_name, params.len() as u32, arg);
         }
 
         self.compile_block(body);
@@ -256,21 +256,21 @@ impl<'a> Compilation<'a> {
 
         // Returns null by default
         self.push_instruction(Inst::LoadConst(NULL_CONST_ADDR), node);
-        self.push_instruction(Inst::Return(args.len() as u32), node);
+        self.push_instruction(Inst::Return(params.len() as u32), node);
 
         let fn_end_ip = self.cur_inst_ptr();
         *self.inst_mut(fn_skip_jump_ip) = Inst::Jump(fn_end_ip);
     }
 
     fn compile_return(&mut self, node: &'a AstNode) {
-        let AstNodeKind::Return(expr) = &node.kind else {
+        let AstNodeKind::Return { expr } = &node.kind else {
             unreachable!();
         };
         self.compile_expression(expr, None);
         let args_count = self
             .fn_data()
             .expect("Function data should exist in function scope")
-            .args
+            .params
             .len();
         self.push_instruction(Inst::Return(args_count as u32), node);
     }
@@ -282,7 +282,7 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_function_call(&mut self, node: &AstNode, discard_returned: bool) {
-        let AstNodeKind::FunctionCall(name, args) = &node.kind else {
+        let AstNodeKind::FunctionCall { name, args } = &node.kind else {
             unreachable!();
         };
 
@@ -336,7 +336,13 @@ impl<'a> Compilation<'a> {
 
     fn compile_loop(&mut self, node: &'a AstNode) {
         let (loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip) =
-            if let AstNodeKind::ForLoop(key, item, iterable, body) = &node.kind {
+            if let AstNodeKind::ForLoop {
+                key,
+                item,
+                iterable,
+                body,
+            } = &node.kind
+            {
                 self.block_start(body, None, true);
 
                 let iterable_addr = self.declare_variable(Self::FOR_ITERABLE_TEMP_VAR, iterable);
@@ -386,7 +392,7 @@ impl<'a> Compilation<'a> {
                 self.push_instruction(Inst::store(index_addr), body);
 
                 (loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip)
-            } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
+            } else if let AstNodeKind::WhileLoop { condition, body } = &node.kind {
                 self.block_start(body, None, true);
 
                 let loop_continue_ip = self.cur_inst_ptr();
@@ -407,7 +413,7 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::Jump(loop_next_iteration_ip), node);
 
         let loop_end_ip = self.cur_inst_ptr();
-        *self.inst_mut(loop_exit_jump_ip) = if matches!(node.kind, AstNodeKind::ForLoop(..)) {
+        *self.inst_mut(loop_exit_jump_ip) = if matches!(node.kind, AstNodeKind::ForLoop { .. }) {
             Inst::JumpIfNull(loop_end_ip)
         } else {
             Inst::JumpIfFalsy(loop_end_ip)
@@ -445,7 +451,12 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_if_statement(&mut self, node: &'a AstNode) {
-        let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
+        let AstNodeKind::IfStatement {
+            condition,
+            body,
+            else_body,
+        } = &node.kind
+        else {
             unreachable!();
         };
         self.compile_expression(condition, None);
@@ -453,9 +464,9 @@ impl<'a> Compilation<'a> {
         let if_jump_ip = self.cur_inst_ptr();
         // Placeholder
         self.push_instruction(Inst::Nop, node);
-        self.compile_block_full(block);
+        self.compile_block_full(body);
 
-        if let Some(else_block) = else_block {
+        if let Some(else_body) = else_body {
             let else_jump_ip = self.cur_inst_ptr();
             // Placeholder
             self.push_instruction(Inst::Nop, node);
@@ -464,7 +475,7 @@ impl<'a> Compilation<'a> {
 
             *self.inst_mut(if_jump_ip) = Inst::JumpIfFalsy(else_start_ip);
 
-            self.compile_block_full(else_block);
+            self.compile_block_full(else_body);
 
             let after_else_ip = self.cur_inst_ptr();
             *self.inst_mut(else_jump_ip) = Inst::Jump(after_else_ip);
@@ -480,16 +491,16 @@ impl<'a> Compilation<'a> {
         };
 
         let fn_data = if let Some(fn_node) = fn_node {
-            let AstNodeKind::FunctionDefinition(_, args, _) = &fn_node.kind else {
+            let AstNodeKind::FunctionDefinition { params, .. } = &fn_node.kind else {
                 self.fatal("Expected function definition node", fn_node);
             };
             let mut fn_data = FnData::default();
 
-            for arg in args {
-                let arg_name = arg
+            for param in params {
+                let param_name = param
                     .get_var_name()
                     .expect("Function argument should be a variable");
-                fn_data.args.push(arg_name.to_string());
+                fn_data.params.push(param_name.to_string());
             }
             Some(fn_data)
         } else {
@@ -541,16 +552,18 @@ impl<'a> Compilation<'a> {
         };
         for node in b.iter() {
             match &node.kind {
-                AstNodeKind::DeclareAssign(..) | AstNodeKind::Assign(..) => {
+                AstNodeKind::DeclareAssign { .. } | AstNodeKind::Assign { .. } => {
                     self.compile_assignment(node)
                 }
-                AstNodeKind::FunctionDefinition(..) => self.compile_function_definition(node),
-                AstNodeKind::FunctionCall(..) => self.compile_function_call(node, true),
-                AstNodeKind::Return(..) => self.compile_return(node),
-                AstNodeKind::ForLoop(..) | AstNodeKind::WhileLoop(..) => self.compile_loop(node),
+                AstNodeKind::FunctionDefinition { .. } => self.compile_function_definition(node),
+                AstNodeKind::FunctionCall { .. } => self.compile_function_call(node, true),
+                AstNodeKind::Return { .. } => self.compile_return(node),
+                AstNodeKind::ForLoop { .. } | AstNodeKind::WhileLoop { .. } => {
+                    self.compile_loop(node)
+                }
                 AstNodeKind::Continue => self.compile_continue(node),
                 AstNodeKind::Break => self.compile_break(node),
-                AstNodeKind::IfStatement(..) => self.compile_if_statement(node),
+                AstNodeKind::IfStatement { .. } => self.compile_if_statement(node),
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }
