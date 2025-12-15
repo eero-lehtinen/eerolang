@@ -128,7 +128,7 @@ impl Inst {
 
 #[derive(Debug)]
 struct ScopeData<'a> {
-    declarations: Vec<(&'a str, usize)>,
+    declarations: Vec<&'a str>,
     /// Stored at the root of the scope stack for function scopes.
     fn_data: Option<FnData>,
     // loop_data: Option<LoopData>,
@@ -198,64 +198,57 @@ impl<'a> Compilation<'a> {
         &mut self.instructions[ip as usize]
     }
 
-    fn get_or_init_var(&mut self, name: &str, depth: u32) -> Addr {
-        if let Some(_) = self.scopes.first().unwrap().fn_data {
-            // fn_data.locals.iter().find(|(n, d)| n == name && )
-            todo!()
+    fn declare_variable(&mut self, name: &'a str, node: &'a AstNode) -> Addr {
+        if let Some(_) = self.fn_data() {
+            todo!();
         } else {
-            let idx = self
-                .globals
-                .iter()
-                .position(|(n, d)| n == name && *d == depth);
+            let depth = (self.scopes.len() - 1) as u32;
 
-            if let Some(index) = idx {
-                let offset = index as u32;
-                Addr::Global(GlobalAddr(offset))
-            } else {
-                let offset = self.globals.len() as u32;
-                self.globals.push((name.to_string(), depth));
-                Addr::Global(GlobalAddr(offset))
+            if self.globals.iter().any(|(n, d)| n == name && *d == depth) {
+                self.fatal(
+                    &format!("Variable '{}' already declared in this scope", name),
+                    node,
+                );
             }
+
+            self.scopes
+                .last_mut()
+                .expect("At least one scope exists")
+                .declarations
+                .push(name);
+
+            let offset = self.globals.len() as u32;
+            self.globals.push((name.to_string(), depth));
+            Addr::Global(GlobalAddr(offset))
         }
     }
 
     fn variable_addr(&mut self, name: &str, node: &AstNode, to_decl: Option<&str>) -> Addr {
         trace!("{:?}", self.scopes);
 
-        let pos = self.tokens[node.token_idx].byte_pos_start;
-
-        let mut maybe_used_before_init = false;
-
         // If we are currently assigning to a declaration with the same name, we
         // should search for outer scopes to shadow properly.
         let skip_scope = if let Some(to_decl) = to_decl
             && to_decl == name
         {
-            maybe_used_before_init = true;
             1
         } else {
             0
         };
 
         for (depth, scope) in self.scopes.iter().enumerate().rev().skip(skip_scope) {
-            for (decl_name, decl_pos) in scope.declarations.iter() {
+            for decl_name in scope.declarations.iter() {
                 if *decl_name == name {
-                    // We found it but it is later than the usage position.
-                    if *decl_pos > pos {
-                        // Still need to search outer scopes in case of shadowing.
-                        maybe_used_before_init = true;
-                        break;
-                    }
-
-                    return self.get_or_init_var(name, depth as u32);
+                    let Some(idx) = self
+                        .globals
+                        .iter()
+                        .position(|(n, d)| n == name && *d as usize == depth)
+                    else {
+                        self.fatal(&format!("Variable '{}' not declared", name), node);
+                    };
+                    return Addr::Global(GlobalAddr(idx as u32));
                 }
             }
-        }
-        if maybe_used_before_init {
-            self.fatal(
-                &format!("Variable '{}' used before initialization", name),
-                node,
-            );
         }
 
         self.fatal(&format!("Variable '{}' not declared", name), node);
@@ -276,13 +269,17 @@ impl<'a> Compilation<'a> {
         self.ip_to_token.push(node.token_idx);
     }
 
-    fn compile_assignment(&mut self, node: &AstNode) {
+    fn compile_assignment(&mut self, node: &'a AstNode) {
         let (var, expr, decl) = match &node.kind {
             AstNodeKind::DeclareAssign(var, expr) => (var, expr, true),
             AstNodeKind::Assign(var, expr) => (var, expr, false),
             _ => unreachable!(),
         };
-        let var_addr = self.variable_addr(var, node, None);
+        let var_addr = if decl {
+            self.declare_variable(var, node)
+        } else {
+            self.variable_addr(var, node, None)
+        };
         self.compile_expression(expr, decl.then_some(var));
         match var_addr {
             Addr::Const(_) => self.fatal("Cannot assign to constant", node),
@@ -632,45 +629,33 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_if_statement(&mut self, node: &'a AstNode) {
-        todo!();
-        // let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
-        //     unreachable!();
-        // };
-        // let (cond_addr, cond_val) = self.compile_expression(condition, None);
-        //
-        // let const_cond_true = cond_val.map(|v| !v.is_falsy());
-        //
-        // if let Some(const_cond_true) = const_cond_true {
-        //     if const_cond_true {
-        //         self.compile_block_full(block);
-        //     } else if let Some(else_block) = else_block {
-        //         self.compile_block_full(else_block);
-        //     }
-        //     return;
-        // }
-        //
-        // let if_jump_ip = self.cur_inst_ptr();
-        // // Placeholder
-        // self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
-        //
-        // self.compile_block_full(block);
-        //
-        // if let Some(else_block) = else_block {
-        //     let else_jump_ip = self.cur_inst_ptr();
-        //     // Placeholder
-        //     self.push_instruction(Inst::jump(0), node);
-        //
-        //     let else_start_ip = self.cur_inst_ptr();
-        //     self.instructions[if_jump_ip as usize].set_jump_target(else_start_ip);
-        //
-        //     self.compile_block_full(else_block);
-        //
-        //     let after_else_ip = self.cur_inst_ptr();
-        //     self.instructions[else_jump_ip as usize].set_jump_target(after_else_ip);
-        // } else {
-        //     let after_if_ip = self.cur_inst_ptr();
-        //     self.instructions[if_jump_ip as usize].set_jump_target(after_if_ip);
-        // }
+        let AstNodeKind::IfStatement(condition, block, else_block) = &node.kind else {
+            unreachable!();
+        };
+        self.compile_expression(condition, None);
+
+        let if_jump_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(Inst::Nop, node);
+        self.compile_block_full(block);
+
+        if let Some(else_block) = else_block {
+            let else_jump_ip = self.cur_inst_ptr();
+            // Placeholder
+            self.push_instruction(Inst::Nop, node);
+
+            let else_start_ip = self.cur_inst_ptr();
+
+            *self.inst_mut(if_jump_ip) = Inst::JumpIfFalsy(else_start_ip);
+
+            self.compile_block_full(else_block);
+
+            let after_else_ip = self.cur_inst_ptr();
+            *self.inst_mut(else_jump_ip) = Inst::Jump(after_else_ip);
+        } else {
+            let after_if_ip = self.cur_inst_ptr();
+            *self.inst_mut(if_jump_ip) = Inst::JumpIfFalsy(after_if_ip);
+        }
     }
 
     // // If the iterable is an expression, it needs to be stored somwhere.
@@ -691,21 +676,21 @@ impl<'a> Compilation<'a> {
             self.fatal("Expected block node", node);
         };
 
-        let mut cur_scope_var_decls: Vec<(&'a str, usize)> = Vec::new();
-        macro_rules! add_decl_node {
-            ($decl:expr) => {
-                let var_name = $decl.get_var_name().expect("Parsed correctly");
-                if cur_scope_var_decls.iter().any(|(v, _)| *v == var_name) {
-                    self.fatal(
-                        &format!("Variable '{}' already declared in this scope", var_name),
-                        $decl,
-                    );
-                }
-                let token = &self.tokens[$decl.token_idx];
-                cur_scope_var_decls.push((var_name, token.byte_pos_start));
-            };
-        }
-
+        // let mut cur_scope_var_decls: Vec<(&'a str, usize)> = Vec::new();
+        // macro_rules! add_decl_node {
+        //     ($decl:expr) => {
+        //         let var_name = $decl.get_var_name().expect("Parsed correctly");
+        //         if cur_scope_var_decls.iter().any(|(v, _)| *v == var_name) {
+        //             self.fatal(
+        //                 &format!("Variable '{}' already declared in this scope", var_name),
+        //                 $decl,
+        //             );
+        //         }
+        //         let token = &self.tokens[$decl.token_idx];
+        //         cur_scope_var_decls.push((var_name, token.byte_pos_start));
+        //     };
+        // }
+        //
         // if let Some(node) = fn_node {
         //     let AstNodeKind::FunctionDefinition(_, args, _) = &node.kind else {
         //         panic!("Should be parsed correctly");
@@ -742,11 +727,11 @@ impl<'a> Compilation<'a> {
         //     }
         // }
         //
-        for node in nodes {
-            if matches!(&node.kind, AstNodeKind::DeclareAssign(_, _)) {
-                add_decl_node!(node);
-            }
-        }
+        // for node in nodes {
+        //     if matches!(&node.kind, AstNodeKind::DeclareAssign(_, _)) {
+        //         add_decl_node!(node);
+        //     }
+        // }
 
         // let frame_ptr = self.cur_stack_ptr_offset;
 
@@ -770,7 +755,7 @@ impl<'a> Compilation<'a> {
         // };
 
         self.scopes.push(ScopeData {
-            declarations: cur_scope_var_decls.clone(),
+            declarations: Vec::new(),
             fn_data,
             // frame_ptr,
             // fn_data,
@@ -807,13 +792,12 @@ impl<'a> Compilation<'a> {
         panic!("No loop data found in current scopes");
     }
 
-    fn fn_data(&self) -> &FnData {
-        for scope in self.scopes.iter().rev() {
-            if let Some(fn_data) = &scope.fn_data {
-                return fn_data;
-            }
-        }
-        panic!("No function data found in current scopes");
+    fn fn_data(&self) -> Option<&FnData> {
+        self.scopes
+            .first()
+            .expect("At least one scope exists")
+            .fn_data
+            .as_ref()
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {
