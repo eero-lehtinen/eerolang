@@ -453,7 +453,9 @@ fn print_colored_tokens(
     let mut byte_pos = 0;
     let bytes = source.as_bytes();
 
-    if let Some((row, context, ..)) = &highlight {
+    if let Some((row, context, ..)) = &highlight
+        && row.saturating_sub(*context) > 0
+    {
         while byte_pos < source.len() {
             let ch = bytes[byte_pos] as char;
             if ch == '\n' {

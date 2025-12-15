@@ -39,18 +39,13 @@ pub struct Map {
     pub iter_keys: Vec<Value>,
 }
 
-pub enum OpError {
-    DivisionByZero,
-    InvalidOperandTypes,
-}
-
-pub type OpResult = Result<Value, OpError>;
+pub type OpResult = Option<Value>;
 
 impl Value {
     const TAG_MASK: usize = 0b1;
     const INT_FLAG: usize = 0b1;
 
-    pub fn smi(val: i32) -> Self {
+    pub const fn smi(val: i32) -> Self {
         let val_usize = val as usize;
 
         let bits = (val_usize << 32) | Self::INT_FLAG;
@@ -140,6 +135,14 @@ impl Value {
         }
     }
 
+    pub fn as_number(&self) -> Option<f64> {
+        match self.as_value_ref() {
+            ValueRef::Smi(i) => Some(i as f64),
+            ValueRef::Float(f) => Some(f),
+            _ => None,
+        }
+    }
+
     pub fn as_value_ref(&self) -> ValueRef<'_> {
         if self.is_smi() {
             ValueRef::Smi((self.bits >> 32) as i32)
@@ -179,9 +182,9 @@ impl Value {
                 s.push_str(b);
                 Value::string(s)
             }
-            _ => return Err(OpError::InvalidOperandTypes),
+            _ => return None,
         };
-        Ok(res)
+        Some(res)
     }
 
     fn eq_impl(&self, other: &Self) -> Option<bool> {
@@ -197,28 +200,19 @@ impl Value {
         Some(res)
     }
 
-    pub fn eq(&self, other: &Self) -> OpResult {
-        if let Some(r) = self.eq_impl(other) {
-            Ok(Value::smi(if r { 1 } else { 0 }))
-        } else {
-            Err(OpError::InvalidOperandTypes)
-        }
+    pub fn eq_(&self, other: &Self) -> OpResult {
+        self.eq_impl(other)
+            .map(|r| Value::smi(if r { 1 } else { 0 }))
     }
 
     pub fn neq(&self, other: &Self) -> OpResult {
-        if let Some(r) = self.eq_impl(other) {
-            Ok(Value::smi(if !r { 1 } else { 0 }))
-        } else {
-            Err(OpError::InvalidOperandTypes)
-        }
+        self.eq_impl(other)
+            .map(|r| Value::smi(if !r { 1 } else { 0 }))
     }
 
     pub fn div(&self, other: &Self) -> OpResult {
         let res = match (self.as_value_ref(), other.as_value_ref()) {
             (ValueRef::Smi(a), ValueRef::Smi(b)) => {
-                if b == 0 {
-                    return Err(OpError::DivisionByZero);
-                }
                 let res = a as f64 / b as f64;
                 if res.fract() == 0.0 {
                     Value::int(res as i64)
@@ -226,27 +220,12 @@ impl Value {
                     Value::float(res)
                 }
             }
-            (ValueRef::Smi(a), ValueRef::Float(b)) => {
-                if b == 0.0 {
-                    return Err(OpError::DivisionByZero);
-                }
-                Value::float(a as f64 / b)
-            }
-            (ValueRef::Float(a), ValueRef::Smi(b)) => {
-                if b == 0 {
-                    return Err(OpError::DivisionByZero);
-                }
-                Value::float(a / b as f64)
-            }
-            (ValueRef::Float(a), ValueRef::Float(b)) => {
-                if b == 0.0 {
-                    return Err(OpError::DivisionByZero);
-                }
-                Value::float(a / b)
-            }
-            _ => return Err(OpError::InvalidOperandTypes),
+            (ValueRef::Smi(a), ValueRef::Float(b)) => Value::float(a as f64 / b),
+            (ValueRef::Float(a), ValueRef::Smi(b)) => Value::float(a / b as f64),
+            (ValueRef::Float(a), ValueRef::Float(b)) => Value::float(a / b),
+            _ => return None,
         };
-        Ok(res)
+        Some(res)
     }
 
     pub fn is_falsy(&self) -> bool {
@@ -262,17 +241,17 @@ impl Value {
 
     pub fn or(&self, other: &Self) -> OpResult {
         if self.is_falsy() {
-            Ok(other.clone())
+            Some(other.clone())
         } else {
-            Ok(self.clone())
+            Some(self.clone())
         }
     }
 
     pub fn and(&self, other: &Self) -> OpResult {
         if self.is_falsy() {
-            Ok(self.clone())
+            Some(self.clone())
         } else {
-            Ok(other.clone())
+            Some(other.clone())
         }
     }
 
@@ -296,9 +275,9 @@ macro_rules! op_impl {
                     (ValueRef::Smi(a), ValueRef::Float(b)) => Value::float(a as f64 $op b),
                     (ValueRef::Float(a), ValueRef::Smi(b)) => Value::float(a $op b as f64),
                     (ValueRef::Float(a), ValueRef::Float(b)) => Value::float(a $op b),
-                    _ => return Err(OpError::InvalidOperandTypes),
+                    _ => return None,
                 };
-                Ok(res)
+                Some(res)
             }
         }
     };
@@ -316,9 +295,9 @@ macro_rules! cmp_op_impl {
                     (ValueRef::Smi(a), ValueRef::Float(b)) => (a as f64) $cmp_op b,
                     (ValueRef::Float(a), ValueRef::Smi(b)) => a $cmp_op b as f64,
                     (ValueRef::Float(a), ValueRef::Float(b)) => a $cmp_op b,
-                    _ => return Err(OpError::InvalidOperandTypes),
+                    _ => return None,
                 };
-                Ok(Value::smi(if res { 1 } else { 0 }))
+                Some(Value::smi(if res { 1 } else { 0 }))
             }
         }
     };
