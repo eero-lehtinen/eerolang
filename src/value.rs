@@ -386,13 +386,13 @@ impl Clone for Value {
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.as_value_ref() {
-            ValueRef::Null => write!(f, "Null"),
-            ValueRef::Smi(i) => write!(f, "Smi({})", i),
-            ValueRef::Float(fl) => write!(f, "Float({})", fl),
-            ValueRef::Range(start, end) => write!(f, "Range({}, {})", start, end),
-            ValueRef::String(s) => write!(f, "String({})", s),
+            ValueRef::Null => write!(f, "NULL"),
+            ValueRef::Smi(i) => write!(f, "I{}", i),
+            ValueRef::Float(fl) => write!(f, "F{:.2}", fl),
+            ValueRef::Range(start, end) => write!(f, "R{},{}", start, end),
+            ValueRef::String(s) => write!(f, "\"{}\"", s),
             ValueRef::List(lst) => {
-                write!(f, "List([")?;
+                write!(f, "[")?;
                 for (i, val) in lst.borrow().iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -404,10 +404,10 @@ impl std::fmt::Debug for Value {
                         break;
                     }
                 }
-                write!(f, "])")
+                write!(f, "]")
             }
             ValueRef::Map(map) => {
-                write!(f, "Map{{")?;
+                write!(f, "{{")?;
                 for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
