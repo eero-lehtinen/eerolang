@@ -35,6 +35,7 @@ pub enum TokenKind {
 pub enum Literal {
     Number(f64),
     String(String),
+    Null,
 }
 
 impl TokenKind {
@@ -49,7 +50,7 @@ impl TokenKind {
             | TokenKind::RBrace
             | TokenKind::Comma => colored::Color::White,
             TokenKind::Literal(Literal::String(_)) => colored::Color::Green,
-            TokenKind::Literal(Literal::Number(_)) => colored::Color::BrightCyan,
+            TokenKind::Literal(Literal::Number(_) | Literal::Null) => colored::Color::BrightCyan,
             TokenKind::Ident(_) => colored::Color::Cyan,
             TokenKind::KeywordFor
             | TokenKind::KeywordWhile
@@ -319,6 +320,7 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     "return" => tok!("return".len(), TokenKind::KeywordReturn),
                     "and" => tok!("and".len(), TokenKind::Operator(Operator::And)),
                     "or" => tok!("or".len(), TokenKind::Operator(Operator::Or)),
+                    "null" => tok!("null".len(), TokenKind::Literal(Literal::Null)),
                     ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
                 }
             }

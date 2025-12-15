@@ -147,6 +147,7 @@ impl<'a> Compilation<'a> {
         let value = match value {
             Literal::Number(n) => Value::number(*n),
             Literal::String(s) => Value::string(s.clone()),
+            Literal::Null => Value::null(),
         };
         let addr = self.constants.len() as u32;
         self.constants.push(value);
