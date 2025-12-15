@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
@@ -463,13 +463,7 @@ impl<'a> Compilation<'a> {
                 );
             };
         }
-        //
-        // // Store temporaries to survive the function call.
-        // let save_args_count = args.len() as u32;
-        // let save_regs_count = REGS_TO_STORE_ON_FN_CALL.len() as u32;
-        // self.push_instruction(Inst::save_regs(save_args_count), node);
-        // self.cur_stack_ptr_offset += save_regs_count + save_args_count;
-        //
+
         self.compile_function_args(args);
 
         if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
@@ -525,9 +519,9 @@ impl<'a> Compilation<'a> {
     const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
 
     fn compile_loop(&mut self, node: &'a AstNode) {
-        let (body, loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip) =
+        let (loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip) =
             if let AstNodeKind::ForLoop(key, item, iterable, body) = &node.kind {
-                self.block_start(body, None, Some(node), false);
+                self.block_start(body, None, true);
 
                 let iterable_addr = self.declare_variable(Self::FOR_ITERABLE_TEMP_VAR, iterable);
                 self.compile_expression(iterable, Some(Self::FOR_ITERABLE_TEMP_VAR));
@@ -559,7 +553,7 @@ impl<'a> Compilation<'a> {
 
                 let loop_exit_jump_ip = self.cur_inst_ptr();
                 // Placeholder
-                self.push_instruction(Inst::Nop, node);
+                self.push_instruction(Inst::Nop, body);
 
                 if let Some(item_node) = item {
                     let item_var_name = item_node.get_var_name().expect("Parsed correctly");
@@ -573,43 +567,37 @@ impl<'a> Compilation<'a> {
                 self.compile_block(body);
 
                 let loop_continue_ip = self.cur_inst_ptr();
-                self.push_instruction(Inst::load(index_addr), node);
-                self.push_instruction(Inst::Incr, node);
-                self.push_instruction(Inst::store(index_addr), node);
+                self.push_instruction(Inst::load(index_addr), body);
+                self.push_instruction(Inst::Incr, body);
+                self.push_instruction(Inst::store(index_addr), body);
 
-                (
-                    body,
-                    loop_next_iteration_ip,
-                    loop_continue_ip,
-                    loop_exit_jump_ip,
-                )
+                (loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip)
             } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
-                todo!();
-                // self.block_start(body, None, None, true);
-                //
-                // let loop_continue_ip = self.cur_inst_ptr();
-                //
-                // let (cond_addr, cond_val) = self.compile_expression(condition, None);
-                //
-                // let const_cond_true = cond_val.map(|v| !v.is_falsy());
-                //
-                // let loop_exit_inst_index = self.cur_inst_ptr();
-                // // Placeholder
-                // self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
-                //
-                // self.compile_block(body);
-                //
-                // (
-                //     body,
-                //     Some(loop_continue_ip),
-                //     Some(loop_exit_inst_index),
-                //     None,
-                // )
+                self.block_start(body, None, true);
+
+                let loop_continue_ip = self.cur_inst_ptr();
+
+                self.compile_expression(condition, None);
+
+                let loop_exit_jump_ip = self.cur_inst_ptr();
+                // Placeholder
+                self.push_instruction(Inst::Nop, body);
+
+                self.compile_block(body);
+
+                (loop_continue_ip, loop_continue_ip, loop_exit_jump_ip)
             } else {
                 panic!("Should be parsed correctly");
             };
 
         self.push_instruction(Inst::Jump(loop_next_iteration_ip), node);
+
+        let loop_end_ip = self.cur_inst_ptr();
+        *self.inst_mut(loop_exit_jump_ip) = if matches!(node.kind, AstNodeKind::ForLoop(..)) {
+            Inst::JumpIfNull(loop_end_ip)
+        } else {
+            Inst::JumpIfFalsy(loop_end_ip)
+        };
 
         let mut continues = Vec::new();
         std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
@@ -621,14 +609,11 @@ impl<'a> Compilation<'a> {
             *self.inst_mut(continue_jump_ip) = Inst::Jump(loop_continue_ip);
         }
 
-        self.block_end(body);
-
-        let loop_end_ip = self.cur_inst_ptr();
-        *self.inst_mut(loop_exit_jump_ip) = Inst::JumpIfNull(loop_end_ip);
-
         for break_jump_ip in breaks {
             *self.inst_mut(break_jump_ip) = Inst::Jump(loop_end_ip);
         }
+
+        self.block_end();
     }
 
     fn compile_continue(&mut self, node: &'a AstNode) {
@@ -675,13 +660,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn block_start(
-        &mut self,
-        node: &'a AstNode,
-        fn_node: Option<&'a AstNode>,
-        for_loop_node: Option<&'a AstNode>,
-        while_loop: bool,
-    ) {
+    fn block_start(&mut self, node: &'a AstNode, fn_node: Option<&'a AstNode>, is_loop: bool) {
         let AstNodeKind::Block(nodes) = &node.kind else {
             self.fatal("Expected block node", node);
         };
@@ -752,7 +731,7 @@ impl<'a> Compilation<'a> {
         // }
 
         let fn_data = fn_node.map(|_| FnData::default());
-        let loop_data = for_loop_node.map(|_| LoopData {
+        let loop_data = is_loop.then(|| LoopData {
             breaks: Vec::new(),
             continues: Vec::new(),
         });
@@ -772,30 +751,13 @@ impl<'a> Compilation<'a> {
             declarations: Vec::new(),
             fn_data,
             loop_data,
-            // frame_ptr,
-            // fn_data,
-            // loop_data,
         });
     }
 
-    fn block_end(&mut self, node: &'a AstNode) {
+    fn block_end(&mut self) {
         self.scopes
             .pop()
             .expect("Scope should exist when ending block");
-        // let sub_sp = self.cur_stack_ptr_offset - scope.frame_ptr;
-        // if sub_sp > 0 {
-        //     self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
-        //     self.cur_stack_ptr_offset -= sub_sp;
-        // }
-    }
-
-    fn loop_data(&self) -> &LoopData {
-        for scope in self.scopes.iter().rev() {
-            if let Some(loop_data) = &scope.loop_data {
-                return loop_data;
-            }
-        }
-        panic!("No loop data found in current scopes");
     }
 
     fn loop_data_mut(&mut self) -> &mut LoopData {
@@ -816,9 +778,9 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {
-        self.block_start(block, None, None, false);
+        self.block_start(block, None, false);
         self.compile_block(block);
-        self.block_end(block);
+        self.block_end();
     }
 
     fn compile_block(&mut self, block: &'a AstNode) {
