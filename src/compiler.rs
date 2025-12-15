@@ -72,6 +72,9 @@ pub enum Inst {
     Eq,
     Neq,
     CallBuiltin(u32, u32), // function index, arg count
+    Jump(u32),
+    JumpIfFalsy(u32),
+    JumpIfTruthy(u32),
 }
 
 impl Display for Inst {
@@ -97,6 +100,9 @@ impl Display for Inst {
             Inst::CallBuiltin(func_index, arg_count) => {
                 write!(f, "CALL_BUILTIN {} {}", func_index, arg_count)
             }
+            Inst::Jump(target) => write!(f, "JUMP {}", target),
+            Inst::JumpIfFalsy(target) => write!(f, "JUMP_IF_FALSY {}", target),
+            Inst::JumpIfTruthy(target) => write!(f, "JUMP_IF_TRUTHY {}", target),
         }
     }
 }
@@ -114,7 +120,8 @@ impl Inst {
             Operator::Gte => Inst::Gte,
             Operator::Eq => Inst::Eq,
             Operator::Neq => Inst::Neq,
-            _ => todo!("Operator {:?} not implemented yet", op),
+            Operator::And => panic!("And is not an instruction"),
+            Operator::Or => panic!("Or is not an instruction"),
         }
     }
 }
@@ -308,8 +315,20 @@ impl<'a> Compilation<'a> {
             }
             AstNodeKind::BinaryOp(left, op, right) => {
                 self.compile_expression(left, to_decl);
-                self.compile_expression(right, to_decl);
-                self.push_instruction(Inst::binary_op(*op), expr);
+                if *op == Operator::And || *op == Operator::Or {
+                    let short_circuit_ip = self.cur_inst_ptr();
+                    self.push_instruction(Inst::Nop, expr);
+                    self.compile_expression(right, to_decl);
+                    let after_right_ip = self.cur_inst_ptr();
+                    if *op == Operator::And {
+                        *self.inst_mut(short_circuit_ip) = Inst::JumpIfFalsy(after_right_ip);
+                    } else {
+                        *self.inst_mut(short_circuit_ip) = Inst::JumpIfTruthy(after_right_ip);
+                    }
+                } else {
+                    self.compile_expression(right, to_decl);
+                    self.push_instruction(Inst::binary_op(*op), expr);
+                }
             }
             AstNodeKind::FunctionCall(..) => {
                 self.compile_function_call(expr, false);

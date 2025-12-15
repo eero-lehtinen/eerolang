@@ -264,10 +264,35 @@ impl<'a> Vm<'a> {
                     };
                     self.eval_stack_ptr -= args as usize;
                     self.push_eval(result);
+                    trace!("  -> result: {:?}", self.eval_stack(0).dbg_display());
+                }
+                Inst::Jump(target) => {
+                    trace!("Jump from {} to {}", self.inst_ptr, target);
+                    self.inst_ptr = target as usize;
+                }
+                Inst::JumpIfFalsy(target) => {
+                    let cond_value = self.eval_stack(0);
                     trace!(
-                        "  -> result: {:?}",
-                        self.eval_stack(self.eval_stack_ptr).dbg_display()
+                        "JumpIfFalsy from {} to {} if {} is falsy",
+                        self.inst_ptr,
+                        target,
+                        cond_value.dbg_display()
                     );
+                    if cond_value.is_falsy() {
+                        self.inst_ptr = target as usize;
+                    }
+                }
+                Inst::JumpIfTruthy(target) => {
+                    let cond_value = self.eval_stack(0);
+                    trace!(
+                        "JumpIfTruthy from {} to {} if {} is truthy",
+                        self.inst_ptr,
+                        target,
+                        cond_value.dbg_display()
+                    );
+                    if !cond_value.is_falsy() {
+                        self.inst_ptr = target as usize;
+                    }
                 } // Inst::
 
                   // OpCode::LoadAddr => {
