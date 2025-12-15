@@ -5,6 +5,7 @@ use std::{sync::OnceLock, time::Instant};
 mod ast_parser;
 mod builtins;
 mod compiler;
+mod instructions;
 mod tokenizer;
 mod value;
 mod vm;

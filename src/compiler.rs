@@ -1,162 +1,13 @@
-use std::fmt::Display;
-
 use foldhash::{HashMap, HashMapExt};
 use log::trace;
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
     builtins::{ArgsRequred, ProgramFn, all_builtins},
+    instructions::{Addr, ConstAddr, GlobalAddr, Inst},
     tokenizer::{Literal, Operator, Token},
     value::{OpResult, Value},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConstAddr(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GlobalAddr(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LocalAddr(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Addr {
-    Const(ConstAddr),
-    Global(GlobalAddr),
-    Local(LocalAddr),
-}
-
-impl Display for Addr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Addr::Const(addr) => write!(f, "{}", addr),
-            Addr::Global(addr) => write!(f, "{}", addr),
-            Addr::Local(addr) => write!(f, "{}", addr),
-        }
-    }
-}
-impl Display for ConstAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "C{}", self.0)
-    }
-}
-impl Display for GlobalAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "G{}", self.0)
-    }
-}
-impl Display for LocalAddr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "L{}", self.0)
-    }
-}
-
-#[derive(Debug)]
-pub enum Inst {
-    Nop,
-    /// Takes value from constant slot and puts it on eval stack.
-    LoadConst(ConstAddr),
-    /// Takes value from global slot and puts it on eval stack.
-    LoadGlobal(GlobalAddr),
-    /// Takes value from local slot and puts it on eval stack.
-    LoadLocal(LocalAddr),
-    /// Takes value from eval stack and puts it into global slot.
-    StoreGlobal(GlobalAddr),
-    /// Takes value from eval stack and puts it into local slot.
-    StoreLocal(LocalAddr),
-    Pop,
-    InitMapIter,
-    LoadKey,
-    LoadItem,
-    Incr,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-    Eq,
-    Neq,
-    CallBuiltin(u32, u32), // function index, arg count
-    Jump(u32),
-    JumpIfNull(u32),
-    JumpIfFalsy(u32),
-    JumpIfTruthy(u32),
-}
-
-impl Inst {
-    fn store(addr: Addr) -> Self {
-        match addr {
-            Addr::Const(_) => panic!("Cannot store to constant address"),
-            Addr::Global(gaddr) => Self::StoreGlobal(gaddr),
-            Addr::Local(laddr) => Self::StoreLocal(laddr),
-        }
-    }
-
-    fn load(addr: Addr) -> Self {
-        match addr {
-            Addr::Const(caddr) => Self::LoadConst(caddr),
-            Addr::Global(gaddr) => Self::LoadGlobal(gaddr),
-            Addr::Local(laddr) => Self::LoadLocal(laddr),
-        }
-    }
-}
-
-impl Display for Inst {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Inst::Nop => write!(f, "NOP"),
-            Inst::LoadConst(addr) => write!(f, "PUSH_CONST {}", addr.0),
-            Inst::LoadGlobal(addr) => write!(f, "PUSH_GLOBAL {}", addr.0),
-            Inst::LoadLocal(addr) => write!(f, "PUSH_LOCAL {}", addr.0),
-            Inst::StoreGlobal(addr) => write!(f, "STORE_GLOBAL {}", addr.0),
-            Inst::StoreLocal(addr) => write!(f, "STORE_LOCAL {}", addr.0),
-            Inst::Pop => write!(f, "POP"),
-            Inst::InitMapIter => write!(f, "INIT_MAP_ITER"),
-            Inst::LoadKey => write!(f, "LOAD_KEY"),
-            Inst::LoadItem => write!(f, "LOAD_ITEM"),
-            Inst::Incr => write!(f, "INCR"),
-            Inst::Add => write!(f, "ADD"),
-            Inst::Sub => write!(f, "SUB"),
-            Inst::Mul => write!(f, "MUL"),
-            Inst::Div => write!(f, "DIV"),
-            Inst::Lt => write!(f, "LT"),
-            Inst::Lte => write!(f, "LTE"),
-            Inst::Gt => write!(f, "GT"),
-            Inst::Gte => write!(f, "GTE"),
-            Inst::Eq => write!(f, "EQ"),
-            Inst::Neq => write!(f, "NEQ"),
-            Inst::CallBuiltin(func_index, arg_count) => {
-                write!(f, "CALL_BUILTIN {} {}", func_index, arg_count)
-            }
-            Inst::Jump(target) => write!(f, "JUMP {}", target),
-            Inst::JumpIfNull(target) => write!(f, "JUMP_IF_NULL {}", target),
-            Inst::JumpIfFalsy(target) => write!(f, "JUMP_IF_FALSY {}", target),
-            Inst::JumpIfTruthy(target) => write!(f, "JUMP_IF_TRUTHY {}", target),
-        }
-    }
-}
-
-impl Inst {
-    fn binary_op(op: Operator) -> Self {
-        match op {
-            Operator::Add => Inst::Add,
-            Operator::Sub => Inst::Sub,
-            Operator::Mul => Inst::Mul,
-            Operator::Div => Inst::Div,
-            Operator::Lt => Inst::Lt,
-            Operator::Lte => Inst::Lte,
-            Operator::Gt => Inst::Gt,
-            Operator::Gte => Inst::Gte,
-            Operator::Eq => Inst::Eq,
-            Operator::Neq => Inst::Neq,
-            Operator::And => panic!("And is not an instruction"),
-            Operator::Or => panic!("Or is not an instruction"),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct ScopeData<'a> {
@@ -168,7 +19,6 @@ struct ScopeData<'a> {
 
 #[derive(Debug, Default)]
 struct FnData {
-    // frame_ptr: u32,
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
     /// Holds (name, scope depth)
     locals: Vec<(String, u32)>,
@@ -368,41 +218,33 @@ impl<'a> Compilation<'a> {
     }
 
     fn compile_function_definition(&mut self, node: &'a AstNode) {
-        todo!();
-        // let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
-        //     unreachable!();
-        // };
-        //
-        // if all_builtins().iter().any(|(n, _, _)| n == name) {
-        //     self.fatal(
-        //         &format!("Cannot redefine built-in function '{}'", name),
-        //         node,
-        //     );
-        // }
-        // if self.functions.contains_key(name) {
-        //     self.fatal(&format!("Function '{}' is already defined", name), node);
-        // }
-        //
-        // let fn_skip_jump_ip = self.cur_inst_ptr();
-        // // Function instructions are defined "in the middle" of the instructions so we need to skip
-        // // over it to make top level code work correctly.
-        // self.push_instruction(Inst::jump(0), node);
-        //
+        let AstNodeKind::FunctionDefinition(name, args, body) = &node.kind else {
+            unreachable!();
+        };
+
+        if all_builtins().iter().any(|(n, _, _)| n == name) {
+            self.fatal(
+                &format!("Cannot redefine built-in function '{}'", name),
+                node,
+            );
+        }
+
+        if self.functions.contains_key(name) {
+            self.fatal(&format!("Function '{}' is already defined", name), node);
+        }
+
+        let fn_skip_jump_ip = self.cur_inst_ptr();
+        // Function instructions are defined "in the middle" of the instructions so we need to skip
+        // over it to make top level code work correctly.
+        self.push_instruction(Inst::Nop, node);
+
         // let fn_start_ip = self.cur_inst_ptr();
         //
         // let args_required = ArgsRequred::Exact(args.len() as u32);
         // self.functions
         //     .insert(name.clone(), (fn_start_ip, args_required));
         //
-        // self.block_start(body, Some(node), None, false);
-        //
-        // // Load arguments from argument registers to stack variables
-        // for (arg_idx, arg) in args.iter().enumerate() {
-        //     let arg_name = arg.get_var_name().expect("Parsed correctly");
-        //     let arg_addr = self.variable_addr(arg_name, arg, None);
-        //     let arg_reg = Addr::abs(ARG_REG_START + arg_idx as u32);
-        //     self.push_instruction(Inst::load_addr(arg_addr, arg_reg), node);
-        // }
+        // self.block_start(body, Some(node), false);
         //
         // self.compile_block(body);
         //
@@ -665,87 +507,11 @@ impl<'a> Compilation<'a> {
             self.fatal("Expected block node", node);
         };
 
-        // let mut cur_scope_var_decls: Vec<(&'a str, usize)> = Vec::new();
-        // macro_rules! add_decl_node {
-        //     ($decl:expr) => {
-        //         let var_name = $decl.get_var_name().expect("Parsed correctly");
-        //         if cur_scope_var_decls.iter().any(|(v, _)| *v == var_name) {
-        //             self.fatal(
-        //                 &format!("Variable '{}' already declared in this scope", var_name),
-        //                 $decl,
-        //             );
-        //         }
-        //         let token = &self.tokens[$decl.token_idx];
-        //         cur_scope_var_decls.push((var_name, token.byte_pos_start));
-        //     };
-        // }
-        //
-        // if let Some(node) = fn_node {
-        //     let AstNodeKind::FunctionDefinition(_, args, _) = &node.kind else {
-        //         panic!("Should be parsed correctly");
-        //     };
-        //
-        //     for arg in args {
-        //         add_decl_node!(arg);
-        //     }
-        // }
-        //
-        // // Add loop variable declarations
-        // if let Some(loop_node) = for_loop_node {
-        //     let AstNodeKind::ForLoop(key, item, _, _) = &loop_node.kind else {
-        //         panic!("Should be parsed correctly");
-        //     };
-        //
-        //     let token = &self.tokens[loop_node.token_idx];
-        //     // These are always not named by the user.
-        //     cur_scope_var_decls.extend_from_slice(&[
-        //         (Self::FOR_ITERABLE_TEMP_VAR, token.byte_pos_start),
-        //         (Self::FOR_INDEX_TEMP_VAR, token.byte_pos_start),
-        //     ]);
-        //
-        //     // This is needed but allowed to be underscore by the user.
-        //     if let Some(key_node) = key {
-        //         add_decl_node!(key_node);
-        //     } else {
-        //         cur_scope_var_decls.push((Self::FOR_KEY_TEMP_VAR, token.byte_pos_start));
-        //     }
-        //
-        //     // This doesn't even need to be created if it's not set or underscore.
-        //     if let Some(item_node) = item {
-        //         add_decl_node!(item_node);
-        //     }
-        // }
-        //
-        // for node in nodes {
-        //     if matches!(&node.kind, AstNodeKind::DeclareAssign(_, _)) {
-        //         add_decl_node!(node);
-        //     }
-        // }
-
-        // let frame_ptr = self.cur_stack_ptr_offset;
-
-        // let add_sp = cur_scope_var_decls.len() as u32;
-        // if add_sp > 0 {
-        //     self.push_instruction(Inst::add_stack_pointer(add_sp), node);
-        //     self.cur_stack_ptr_offset += add_sp;
-        // }
-
         let fn_data = fn_node.map(|_| FnData::default());
         let loop_data = is_loop.then(|| LoopData {
             breaks: Vec::new(),
             continues: Vec::new(),
         });
-        //
-        // let loop_data = if for_loop_node.is_some() || while_loop {
-        //     Some(LoopData {
-        //         frame_ptr,
-        //         stack_ptr: self.cur_stack_ptr_offset,
-        //         breaks: Vec::new(),
-        //         continues: Vec::new(),
-        //     })
-        // } else {
-        //     None
-        // };
 
         self.scopes.push(ScopeData {
             declarations: Vec::new(),

@@ -6,7 +6,8 @@ use crate::{
     TOKENS,
     ast_parser::fatal_generic,
     builtins::{ProgramFn, builtin_get},
-    compiler::{Compilation, ConstAddr, GlobalAddr, Inst, LocalAddr, binary_op_err},
+    compiler::{Compilation, binary_op_err},
+    instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
     tokenizer::{Operator, Token, find_source_char_col, report_source_pos},
     value::{Map, Value, ValueRef},
 };
@@ -146,19 +147,6 @@ impl<'a> Vm<'a> {
             self.fatal("Evaluation stack overflow");
         }
     }
-
-    // fn mem_swap(&mut self, addr1: Addr, addr2: Addr) {
-    //     let pos1 = self.mem(addr1);
-    //     let pos2 = self.mem(addr2);
-    //     debug_assert!(pos1 < self.eval_stack.len());
-    //     debug_assert!(pos2 < self.eval_stack.len());
-    //     // SAFETY: Look up ^
-    //     unsafe {
-    //         let ptr1 = self.eval_stack.get_unchecked_mut(pos1) as *mut Value;
-    //         let ptr2 = self.eval_stack.get_unchecked_mut(pos2) as *mut Value;
-    //         std::ptr::swap(ptr1, ptr2);
-    //     }
-    // }
 
     pub fn run(&mut self, step_through: bool) {
         macro_rules! bop {
@@ -410,137 +398,7 @@ impl<'a> Vm<'a> {
                     if !cond_value.is_falsy() {
                         self.inst_ptr = target as usize;
                     }
-                } // Inst::
-
-                  // OpCode::LoadAddr => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     let src = Addr::from_raw(args.src1);
-                  //     self.load_addr(dst, src);
-                  // }
-                  // OpCode::LoadInt => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     let value = i32::from_ne_bytes(args.src1.to_ne_bytes());
-                  //     trace!("Load int {} to {}", value, dst);
-                  //     self.mem_set(dst, Value::smi(value));
-                  // }
-                  // OpCode::Push => {
-                  //     let src = Addr::from_raw(args.dst);
-                  //     trace!(
-                  //         "Push value {} (at {}) to stack",
-                  //         self.mem_get(src).dbg_display(),
-                  //         src
-                  //     );
-                  //     self.stack_ptr += 1;
-                  //     self.mem_set(Addr::stack(0), self.mem_get(src).clone());
-                  // }
-                  // OpCode::Pop => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     trace!(
-                  //         "Pop value {} from stack to {}",
-                  //         self.mem_get(Addr::stack(0)).dbg_display(),
-                  //         dst
-                  //     );
-                  //     self.mem_swap(dst, Addr::stack(0));
-                  //     self.stack_ptr -= 1;
-                  // }
-                  // OpCode::InitMapIter => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     self.init_map_iter(dst);
-                  // }
-                  // OpCode::LoadIterKey => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     let src = Addr::from_raw(args.src1);
-                  //     let index = Addr::from_raw(args.src2);
-                  //     self.load_iter_key(dst, src, index);
-                  // }
-                  // OpCode::LoadItem => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     let src = Addr::from_raw(args.src1);
-                  //     let key = Addr::from_raw(args.src2);
-                  //     self.load_item(dst, src, key);
-                  // }
-                  // OpCode::AddStack => {
-                  //     let value = args.dst;
-                  //     self.add_stack(value);
-                  // }
-                  // OpCode::SubStack => {
-                  //     let value = args.dst;
-                  //     self.sub_stack(value);
-                  // }
-
-                  // OpCode::And => bop!(and, args, Operator::And),
-                  // OpCode::Or => bop!(or, args, Operator::Or),
-                  // OpCode::CallBuiltin => {
-                  //     let func = args.dst;
-                  //     let arg_count = args.src1 as u8;
-                  //     self.call_builtin(func, arg_count);
-                  // }
-                  // OpCode::Incr => {
-                  //     let dst = Addr::from_raw(args.dst);
-                  //     self.incr(dst);
-                  // }
-                  // OpCode::SaveRegs => {
-                  //     let arg_count = args.dst;
-                  //     trace!("Save {} args and temporary registers to stack", arg_count);
-                  //     for reg_addr in REGS_TO_STORE_ON_FN_CALL {
-                  //         self.stack_ptr += 1;
-                  //         self.mem_swap(*reg_addr, Addr::stack(0));
-                  //     }
-                  //     for arg_addr in ARG_REGS.iter().take(arg_count as usize) {
-                  //         self.stack_ptr += 1;
-                  //         self.mem_swap(*arg_addr, Addr::stack(0));
-                  //     }
-                  // }
-                  // OpCode::RestoreRegs => {
-                  //     let arg_count = args.dst;
-                  //     trace!(
-                  //         "Restore {} args and temporary registers from stack",
-                  //         arg_count
-                  //     );
-                  //     for arg_addr in ARG_REGS.iter().take(arg_count as usize).rev() {
-                  //         self.mem_swap(*arg_addr, Addr::stack(0));
-                  //         self.stack_ptr -= 1;
-                  //     }
-                  //     for reg_addr in REGS_TO_STORE_ON_FN_CALL.iter().rev() {
-                  //         self.mem_swap(*reg_addr, Addr::stack(0));
-                  //         self.stack_ptr -= 1;
-                  //     }
-                  // }
-                  // OpCode::Jump => {
-                  //     let target = args.dst;
-                  //     trace!("Jump from {} to {}", self.inst_ptr, target);
-                  //     self.inst_ptr = target as usize;
-                  // }
-                  // OpCode::JumpAddr => {
-                  //     let target = Addr::from_raw(args.dst);
-                  //     let target_value = self.mem_get(target);
-                  //     let Some(target_ip) = target_value.as_int() else {
-                  //         self.fatal(&format!(
-                  //             "Expected (int) as jump address, got {:?}",
-                  //             target_value.dbg_display()
-                  //         ));
-                  //     };
-                  //     trace!(
-                  //         "Jump from {} to {} (at {})",
-                  //         self.inst_ptr, target_ip, target
-                  //     );
-                  //     self.inst_ptr = target_ip as usize;
-                  // }
-                  // OpCode::JumpIfFalsy => {
-                  //     let target = args.dst;
-                  //     let cond = Addr::from_raw(args.src1);
-                  //     trace!(
-                  //         "JumpIfZero from {} to {} if {} (at {}) is zero",
-                  //         self.inst_ptr,
-                  //         target,
-                  //         self.mem_get(cond).dbg_display(),
-                  //         cond
-                  //     );
-                  //     let cond_value = &self.mem_get(cond);
-                  //     if cond_value.is_falsy() {
-                  //         self.inst_ptr = target as usize;
-                  //     }
-                  // }
+                }
             }
 
             if step_through {
@@ -552,40 +410,7 @@ impl<'a> Vm<'a> {
             }
         }
     }
-    //
-    // fn incr(&mut self, dst: Addr) {
-    //     trace!(
-    //         "Increment value {} (at {})",
-    //         self.mem_get(dst).dbg_display(),
-    //         dst
-    //     );
-    //     let v = self.mem_get(dst);
-    //     if let Some(i) = v.as_int() {
-    //         self.mem_set(dst, Value::int(i + 1));
-    //     } else {
-    //         self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
-    //     }
-    // }
-    //
-    // fn sub_stack(&mut self, value: u32) {
-    //     trace!("Subtract {} from stack pointer", value);
-    //     self.call_stack_ptr -= value as usize;
-    //     debug_assert!(self.call_stack_ptr >= self.sp_start);
-    // }
-    //
-    // fn add_stack(&mut self, value: u32) {
-    //     trace!("Add {} to stack pointer", value);
-    //     self.call_stack_ptr += value as usize;
-    //     if self.call_stack_ptr >= self.sp_end {
-    //         self.fatal(&format!(
-    //             "Stack overflow: stack pointer {} exceeds memory size {}",
-    //             self.call_stack_ptr,
-    //             self.eval_stack.len()
-    //         ));
-    //     }
-    //     debug_assert!(self.call_stack_ptr >= self.sp_start);
-    // }
-    //
+
     fn step(&mut self, inst_ptr: usize) {
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
         let char_col = find_source_char_col(token.line, token.byte_col);
@@ -630,136 +455,4 @@ impl<'a> Vm<'a> {
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
     }
-    //
-    // fn load_addr(&mut self, dst: Addr, src: Addr) {
-    //     trace!(
-    //         "Load value {} from {} to {}",
-    //         self.mem_get(src).dbg_display(),
-    //         src,
-    //         dst
-    //     );
-    //     self.mem_set(dst, self.mem_get(src).clone());
-    // }
-    //
-    // fn init_map_iter(&mut self, dst: Addr) {
-    //     trace!(
-    //         "Init map iteration list for {} (at {})",
-    //         self.mem_get(dst).dbg_display(),
-    //         dst
-    //     );
-    //     // Other types get ignored
-    //     let value = self.mem_get(dst);
-    //     if let ValueRef::Map(map) = value.as_value_ref() {
-    //         let mut map = map.borrow_mut();
-    //         let Map { inner, iter_keys } = map.deref_mut();
-    //         if iter_keys.is_empty() {
-    //             for key in inner.keys() {
-    //                 iter_keys.push(key.clone());
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // fn load_item(&mut self, dst: Addr, src: Addr, key: Addr) {
-    //     trace!(
-    //         "Load collection item with key {} (at {}) from {} (at {}) to {}",
-    //         self.mem_get(key).dbg_display(),
-    //         key,
-    //         self.mem_get(src).dbg_display(),
-    //         src,
-    //         dst
-    //     );
-    //     let iterable = self.mem_get(src);
-    //     let key = self.mem_get(key);
-    //     match builtin_get(&[iterable.clone(), key.clone()]) {
-    //         Ok(value) => {
-    //             trace!("  -> loaded value: {:?}", value.dbg_display());
-    //             self.mem_set(dst, value);
-    //         }
-    //         Err(e) => self.fatal(&format!("Wrong value in for loop iterable: {}", e)),
-    //     }
-    // }
-    //
-    // fn load_iter_key(&mut self, dst: Addr, src: Addr, index: Addr) {
-    //     trace!(
-    //         "Load iteration key at index {} (at {}) of {} (at {}) to {}",
-    //         self.mem_get(index).dbg_display(),
-    //         index,
-    //         self.mem_get(src).dbg_display(),
-    //         src,
-    //         dst
-    //     );
-    //     let iterable = self.mem_get(src);
-    //     let index = self.mem_get(index);
-    //     let Some(index) = index.as_int() else {
-    //         self.fatal(&format!(
-    //             "Expected (int) as index, got {:?}",
-    //             index.dbg_display()
-    //         ));
-    //     };
-    //
-    //     let key = match iterable.as_value_ref() {
-    //         ValueRef::List(list_rc) => {
-    //             let list = list_rc.borrow();
-    //             if index < 0 || index >= list.len() as i64 {
-    //                 None
-    //             } else {
-    //                 Some(Value::int(index))
-    //             }
-    //         }
-    //         ValueRef::Range(start, end) => {
-    //             if index < 0 || index >= (end - start) {
-    //                 None
-    //             } else {
-    //                 Some(Value::int(start + index))
-    //             }
-    //         }
-    //         ValueRef::Map(map_rc) => {
-    //             let map = map_rc.borrow();
-    //             if index < 0 || index >= map.iter_keys.len() as i64 {
-    //                 None
-    //             } else {
-    //                 Some(map.iter_keys[index as usize].clone())
-    //             }
-    //         }
-    //         _ => self.fatal(&format!(
-    //             "Expected (list/range/map) as iterable, got {:?}",
-    //             iterable.dbg_display()
-    //         )),
-    //     };
-    //
-    //     self.mem_set(
-    //         SUCCESS_FLAG_REG,
-    //         Value::smi(if key.is_some() { 1 } else { 0 }),
-    //     );
-    //     if let Some(key) = key {
-    //         self.mem_set(dst, key);
-    //     }
-    //     trace!(
-    //         "  -> key: {:?}, success: {}",
-    //         self.mem_get(dst).dbg_display(),
-    //         self.mem_get(SUCCESS_FLAG_REG).dbg_display()
-    //     );
-    // }
-    //
-    // fn call_builtin(&mut self, func: u32, arg_count: u8) {
-    //     trace!(
-    //         "Call builtin function {} with {} args, store result in {}",
-    //         self.builtins[func as usize].1, arg_count, FN_RETURN_VALUE_REG
-    //     );
-    //     debug_assert!((func as usize) < self.builtins.len());
-    //     // SAFETY: non-existent functions should be hard to call
-    //     let func_impl = unsafe { self.builtins.get_unchecked(func as usize).0 };
-    //     let args = &mut self.eval_stack
-    //         [ARG_REG_START as usize..ARG_REG_START as usize + arg_count as usize];
-    //     let result = match func_impl(args) {
-    //         Ok(v) => v,
-    //         Err(e) => self.fatal(&format!("Error in function call: {}", e)),
-    //     };
-    //     self.mem_set(FN_RETURN_VALUE_REG, result);
-    //     trace!(
-    //         "  -> result: {:?}",
-    //         self.mem_get(FN_RETURN_VALUE_REG).dbg_display()
-    //     );
-    // }
 }
