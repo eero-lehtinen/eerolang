@@ -10,6 +10,7 @@ x = 10 + 5 * 2 - 3 / 1
 # Printing
 print("The value of x is", x)
 
+# Looping
 for i in range(10) {
     print("i is", i)
     if i > 4 {
@@ -26,7 +27,7 @@ for i, val in list {
     print("Index:", i, "Value:", val)
 }
 
-# Functions
+# Functions (with recursion)
 fn fibonacci(x) {
     if x <= 1 {
         return x
@@ -39,6 +40,7 @@ print("Fibonacci of 6 is", fibonacci(6))
 # Maps (strings as keys and any type as values)
 map := map(list("one", 1), list("two", 2), list("three", 3))
 
+# Iterating over a map
 for key, value in map {
     print("Key:", key, "Value:", value)
 }

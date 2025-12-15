@@ -2,7 +2,7 @@
 
 Suitable only for non-serious purposes.
 
-Eerolang is implemented in Rust with only a few dependencies (for terminal interaction and logging). It contains a tokenizer, a predictive recursive-descent parser, a one pass bytecode compiler and a virtual machine.
+Eerolang is dynamically typed programming language implemented in Rust with only a few dependencies (for terminal interaction and logging). It contains a tokenizer, a predictive recursive-descent parser, a one-pass bytecode compiler and a unified stack virtual machine.
 
 ## Installation
 
@@ -18,21 +18,19 @@ eerolang <file.eel>
 
 ## Motivation
 
-I couldn't think of a language to try this year for the [Advent of Code 2025](https://adventofcode.com/2025) challenge, so I decided to make my own. Check out [my solutions](https://github.com/eero-lehtinen/advent-of-code-2025) if you want.
-
-I've also never tried to make a language before, so I wanted to figure out how that works.
+I couldn't think of a language to try this year for the [Advent of Code 2025](https://adventofcode.com/2025) challenge, so I decided to make my own. Check out [my solutions](https://github.com/eero-lehtinen/advent-of-code-2025) if you want. Also I've never made a language before.
 
 ## Features
 
-Eerolang is pretty close to Python. It has strong typing, e.g. you can't add a string to a number. It also has dynamic typing, so types are only checked at run time and not when compiling. Also a list or a map can contain any type in any position.
+Eerolang is pretty close to Python. It has strong typing, e.g. you can't add a string to a number. It also has dynamic typing, so types are only checked at run time and not when compiling. A list or a map can contain any type in any position.
 
-The types are: `number`, `string`, `range`, `list`, and `map`. There are no user-defined types. There are also no booleans, all types can be falsy (0 for numbers, empty strings, lists, and maps). If you really want booleans, I guess you can do `true := 1` and `false := 0` at the start of the file.
+The types are: `null`, `number`, `string`, `range`, `list`, and `map`. There are no user-defined types. There are also no booleans, all types can be falsy (`null`, `0` for numbers, empty strings, lists, maps). If you really want booleans, I guess you can do `true := 1` and `false := 0` at the start of the file.
 
 The syntax is a combination of Lua, Go and Rust. Declarations use the walrus operator from Go. For-loops and logical expressions are from Lua. Fn and bracing styles are from Rust. The ad hoc grammar also turned out to not need newlines or semicolons at all. Multiple statements in the same file are perfectly fine as long as they are separated by any whitespace (e.g. `x := 10 print(x)`).
 
-I spent way too much time making the error messages good for no reason, so enjoy that, me.
+I spent way too much time making the error messages good, so enjoy that, me.
 
-Below is an exaple showing off the features of the language:
+Below is an example showing off the features of the language:
 
 ```python
 # Declaration and assignment
@@ -47,6 +45,7 @@ x = 10 + 5 * 2 - 3 / 1
 # Printing
 print("The value of x is", x)
 
+# Looping
 for i in range(10) {
     print("i is", i)
     if i > 4 {
@@ -63,7 +62,7 @@ for i, val in list {
     print("Index:", i, "Value:", val)
 }
 
-# Functions
+# Functions (with recursion)
 fn fibonacci(x) {
     if x <= 1 {
         return x
@@ -76,6 +75,7 @@ print("Fibonacci of 6 is", fibonacci(6))
 # Maps (strings as keys and any type as values)
 map := map(list("one", 1), list("two", 2), list("three", 3))
 
+# Iterating over a map
 for key, value in map {
     print("Key:", key, "Value:", value)
 }
@@ -151,11 +151,11 @@ x = sqrt(2)
 
 ## Performance notes
 
-Eerolang is not optimized for performance as it is about as slow as Python (not including startup time, which is almost instant with Eerolang). All types are heap allocated and reference counted by default, except from small integers (SMIs), which are implemented as tagged pointers the same as V8. A lot of extra instructions are generated as there are no optimization passes. The number of instructions could probably be at least halved, likely even more for function heavy programs.
+Eerolang is not optimized for performance as it is about as slow as Python (not including startup time, which is almost instant with Eerolang). All types are heap allocated and reference counted by default, except from small integers (SMIs), which are implemented as tagged pointers the same as V8. A lot of extra instructions are generated as there are no optimization passes.
 
 ### Performance improvements that are out of scope considering the purposes of the language:
 
-- Carbage collection to replace reference counting
+- Garbage collection to replace reference counting
 - Interning for strings
 - String slices instead of copies
 - Optimization passes (might require more intermediate representations between AST and bytecode)
