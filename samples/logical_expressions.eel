@@ -1,0 +1,54 @@
+fn true() {
+    print("true")
+    return 1
+}
+
+fn false() {
+    print("false")
+    return 0
+}
+
+print("Should print 'true', 'false', '0'")
+x := true() and false() and false()
+print(x, "\n")
+
+print("Should print 'false', '0'")
+x = false() and true()
+print(x, "\n")
+
+print("Should print 'false', 'true', '1'")
+y := false() or true()
+print(y, "\n")
+
+print("Should print 'true', '1'")
+y = true() or false()
+print(y, "\n")
+
+print("Should print 'false', '1'")
+if false() and true() and true() {
+    print("This should not print")
+}
+print()
+
+print("Should print 'true', 'if'")
+if true() or false() or false() {
+    print("if\n")
+}
+
+print("Should print 'true'")
+while true() or false() {
+    break
+}
+print()
+
+
+print("Should print 'false', '1'")
+x = false() and -1 or 1
+print(x, "\n")
+
+print("Should print 'true', '-1'")
+x = true() and -1 and 1
+print(x, "\n")
+
+print("Should print 'true', '-1'")
+print(true() and -1 or 1, "\n")

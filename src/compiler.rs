@@ -186,19 +186,27 @@ impl<'a> Compilation<'a> {
             }
             AstNodeKind::BinaryOp { left, op, right } => {
                 self.compile_expression(left, to_decl);
-                if *op == Operator::And || *op == Operator::Or {
+                let short_circuit_ip = (*op == Operator::And || *op == Operator::Or).then(|| {
+                    // Needs to duplicate because jump will consume it.
+                    self.push_instruction(Inst::Dup, expr);
+
+                    // Placeholder for jump
                     let short_circuit_ip = self.cur_inst_ptr();
-                    self.push_instruction(Inst::Nop, expr);
-                    self.compile_expression(right, to_decl);
-                    let after_right_ip = self.cur_inst_ptr();
-                    if *op == Operator::And {
-                        *self.inst_mut(short_circuit_ip) = Inst::JumpIfFalsy(after_right_ip);
-                    } else {
-                        *self.inst_mut(short_circuit_ip) = Inst::JumpIfTruthy(after_right_ip);
-                    }
-                } else {
-                    self.compile_expression(right, to_decl);
-                    self.push_instruction(Inst::binary_op(*op), expr);
+                    self.push_instruction(
+                        if *op == Operator::And {
+                            Inst::JumpIfFalsy(0)
+                        } else {
+                            Inst::JumpIfTruthy(0)
+                        },
+                        expr,
+                    );
+                    short_circuit_ip
+                });
+                self.compile_expression(right, to_decl);
+                self.push_instruction(Inst::binary_op(*op), expr);
+                if let Some(short_circuit_ip) = short_circuit_ip {
+                    let ip = self.cur_inst_ptr();
+                    self.inst_mut(short_circuit_ip).set_jump_target(ip);
                 }
             }
             AstNodeKind::FunctionCall { .. } => {

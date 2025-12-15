@@ -57,12 +57,26 @@ impl<'a> Vm<'a> {
     }
 
     fn fatal(&self, msg: &str) -> ! {
-        let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
+        let token_idx = if let Some(idx) = self.ip_to_token.get(self.inst_ptr) {
+            *idx
+        } else if self.inst_ptr > 0 {
+            self.ip_to_token[self.inst_ptr - 1]
+        } else {
+            0
+        };
+
+        let instruction = self.instructions.get(self.inst_ptr);
+
+        let token = &self.tokens[token_idx];
         fatal_generic(
             msg,
             &format!(
-                "Fatal error during VM execution at inst {:?}",
-                self.instructions[self.inst_ptr]
+                "Fatal error during VM execution {}",
+                if let Some(instruction) = instruction {
+                    format!("({}) ", instruction)
+                } else {
+                    "".to_string()
+                }
             ),
             token,
         )
@@ -261,6 +275,11 @@ impl<'a> Vm<'a> {
                     );
                     *self.local_mut(laddr) = value;
                 }
+                Inst::Dup => {
+                    let value = self.stack(0).clone();
+                    trace!("Duplicate top stack value {}", value.dbg_display());
+                    self.push(value);
+                }
                 Inst::Pop => {
                     trace!(
                         "Pop value {} from stack",
@@ -378,6 +397,8 @@ impl<'a> Vm<'a> {
                 Inst::Gte => bop!(gte, args, Operator::Gte),
                 Inst::Eq => bop!(eq_, args, Operator::Eq),
                 Inst::Neq => bop!(neq, args, Operator::Neq),
+                Inst::And => bop!(and, args, Operator::And),
+                Inst::Or => bop!(or, args, Operator::Or),
                 Inst::CallBuiltin(index, args) => {
                     trace!(
                         "Call builtin function {} with {} args",
@@ -469,6 +490,7 @@ impl<'a> Vm<'a> {
                     if cond_value.is_falsy() {
                         self.inst_ptr = target as usize;
                     }
+                    self.stack_ptr -= 1;
                 }
                 Inst::JumpIfTruthy(target) => {
                     let cond_value = self.stack(0);
@@ -481,6 +503,7 @@ impl<'a> Vm<'a> {
                     if !cond_value.is_falsy() {
                         self.inst_ptr = target as usize;
                     }
+                    self.stack_ptr -= 1;
                 }
             }
 
@@ -497,6 +520,21 @@ impl<'a> Vm<'a> {
             if self.inst_ptr == inst_ptr {
                 self.inst_ptr += 1;
             }
+        }
+
+        if self.stack_ptr != 0 {
+            self.fatal(&format!(
+                "Stack not empty after execution ended, contents: {}",
+                (1..=self.stack_ptr)
+                    .map(|i| self.stack[i]
+                        .dbg_display()
+                        .chars()
+                        .take(20)
+                        .map(|c| if c == '\n' { '⏎' } else { c })
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
     }
 

@@ -58,6 +58,7 @@ pub enum Inst {
     StoreGlobalKeep(GlobalAddr),
     /// Like StoreLocal but keeps value on the stack.
     StoreLocalKeep(LocalAddr),
+    Dup,
     Pop,
     InitMapIter,
     LoadKey,
@@ -73,6 +74,8 @@ pub enum Inst {
     Gte,
     Eq,
     Neq,
+    And,
+    Or,
     // function index, arg count
     CallBuiltin(u32, u32),
     // target instruction pointer, locals count
@@ -107,6 +110,15 @@ impl Inst {
         }
     }
 
+    pub fn set_jump_target(&mut self, target: u32) {
+        match self {
+            Inst::Jump(t) | Inst::JumpIfNull(t) | Inst::JumpIfFalsy(t) | Inst::JumpIfTruthy(t) => {
+                *t = target
+            }
+            _ => panic!("Not a jump instruction"),
+        }
+    }
+
     pub fn binary_op(op: Operator) -> Self {
         match op {
             Operator::Add => Inst::Add,
@@ -119,8 +131,8 @@ impl Inst {
             Operator::Gte => Inst::Gte,
             Operator::Eq => Inst::Eq,
             Operator::Neq => Inst::Neq,
-            Operator::And => panic!("And is not an instruction"),
-            Operator::Or => panic!("Or is not an instruction"),
+            Operator::And => Inst::And,
+            Operator::Or => Inst::Or,
         }
     }
 }
@@ -136,6 +148,7 @@ impl Display for Inst {
             Inst::StoreLocal(addr) => write!(f, "STORE_LOCAL {}", addr.0),
             Inst::StoreGlobalKeep(addr) => write!(f, "STORE_GLOBAL_KEEP {}", addr.0),
             Inst::StoreLocalKeep(addr) => write!(f, "STORE_LOCAL_KEEP {}", addr.0),
+            Inst::Dup => write!(f, "DUP"),
             Inst::Pop => write!(f, "POP"),
             Inst::InitMapIter => write!(f, "INIT_MAP_ITER"),
             Inst::LoadKey => write!(f, "LOAD_KEY"),
@@ -151,6 +164,8 @@ impl Display for Inst {
             Inst::Gte => write!(f, "GTE"),
             Inst::Eq => write!(f, "EQ"),
             Inst::Neq => write!(f, "NEQ"),
+            Inst::And => write!(f, "AND"),
+            Inst::Or => write!(f, "OR"),
             Inst::CallBuiltin(func_index, arg_count) => {
                 write!(f, "CALL_BUILTIN {} {}", func_index, arg_count)
             }
