@@ -509,7 +509,12 @@ impl<'a> Vm<'a> {
         info!(
             "Stack: {}",
             (1..=self.stack_ptr)
-                .map(|i| self.stack[i].dbg_display())
+                .map(|i| self.stack[i]
+                    .dbg_display()
+                    .chars()
+                    .take(10)
+                    .map(|c| if c == '\n' { '⏎' } else { c })
+                    .collect::<String>())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -522,7 +527,16 @@ impl<'a> Vm<'a> {
         info!(
             "Globals: {}",
             (0..self.globals.len())
-                .map(|i| format!("{}: {}", i, self.globals[i].dbg_display()))
+                .map(|i| format!(
+                    "{}: {}",
+                    i,
+                    self.globals[i]
+                        .dbg_display()
+                        .chars()
+                        .take(10)
+                        .map(|c| if c == '\n' { '⏎' } else { c })
+                        .collect::<String>()
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
