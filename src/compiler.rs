@@ -170,15 +170,7 @@ impl<'a> Compilation<'a> {
             self.variable_addr(var, node, None)
         };
         self.compile_expression(expr, decl.then_some(var));
-        match var_addr {
-            Addr::Const(_) => self.fatal("Cannot assign to constant", node),
-            Addr::Global(addr) => {
-                self.push_instruction(Inst::StoreGlobal(addr), node);
-            }
-            Addr::Local(addr) => {
-                self.push_instruction(Inst::StoreLocal(addr), node);
-            }
-        }
+        self.push_instruction(Inst::store(var_addr), node);
     }
 
     fn compile_expression(&mut self, expr: &AstNode, to_decl: Option<&str>) {
@@ -189,15 +181,7 @@ impl<'a> Compilation<'a> {
             }
             AstNodeKind::Variable(name) => {
                 let addr = self.variable_addr(name, expr, to_decl);
-                match addr {
-                    Addr::Const(_) => self.fatal("Cannot use constant as variable", expr),
-                    Addr::Global(addr) => {
-                        self.push_instruction(Inst::LoadGlobal(addr), expr);
-                    }
-                    Addr::Local(addr) => {
-                        self.push_instruction(Inst::LoadLocal(addr), expr);
-                    }
-                }
+                self.push_instruction(Inst::load(addr), expr);
             }
             AstNodeKind::BinaryOp(left, op, right) => {
                 self.compile_expression(left, to_decl);
@@ -597,7 +581,7 @@ pub fn binary_op_err(left_val: &Value, op: Operator, right_val: &Value) -> Strin
     )
 }
 
-#[inline]
+#[allow(dead_code)]
 pub fn binary_op(l: &mut Value, op: Operator, r: &Value) -> OpResult {
     match op {
         Operator::Add => l.add(r),

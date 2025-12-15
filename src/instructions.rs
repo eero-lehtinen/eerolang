@@ -13,7 +13,6 @@ pub struct LocalAddr(pub i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addr {
-    Const(ConstAddr),
     Global(GlobalAddr),
     Local(LocalAddr),
 }
@@ -21,7 +20,6 @@ pub enum Addr {
 impl Display for Addr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Addr::Const(addr) => write!(f, "{}", addr),
             Addr::Global(addr) => write!(f, "{}", addr),
             Addr::Local(addr) => write!(f, "{}", addr),
         }
@@ -86,7 +84,6 @@ pub enum Inst {
 impl Inst {
     pub fn store(addr: Addr) -> Self {
         match addr {
-            Addr::Const(_) => panic!("Cannot store to constant address"),
             Addr::Global(gaddr) => Self::StoreGlobal(gaddr),
             Addr::Local(laddr) => Self::StoreLocal(laddr),
         }
@@ -94,7 +91,6 @@ impl Inst {
 
     pub fn load(addr: Addr) -> Self {
         match addr {
-            Addr::Const(caddr) => Self::LoadConst(caddr),
             Addr::Global(gaddr) => Self::LoadGlobal(gaddr),
             Addr::Local(laddr) => Self::LoadLocal(laddr),
         }
@@ -122,9 +118,9 @@ impl Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Inst::Nop => write!(f, "NOP"),
-            Inst::LoadConst(addr) => write!(f, "PUSH_CONST {}", addr.0),
-            Inst::LoadGlobal(addr) => write!(f, "PUSH_GLOBAL {}", addr.0),
-            Inst::LoadLocal(addr) => write!(f, "PUSH_LOCAL {}", addr.0),
+            Inst::LoadConst(addr) => write!(f, "LOAD_CONST {}", addr.0),
+            Inst::LoadGlobal(addr) => write!(f, "LOAD_GLOBAL {}", addr.0),
+            Inst::LoadLocal(addr) => write!(f, "LOAD_LOCAL {}", addr.0),
             Inst::StoreGlobal(addr) => write!(f, "STORE_GLOBAL {}", addr.0),
             Inst::StoreLocal(addr) => write!(f, "STORE_LOCAL {}", addr.0),
             Inst::Pop => write!(f, "POP"),
