@@ -19,7 +19,7 @@ pub struct GlobalAddr(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalAddr(pub u32);
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addr {
     Const(ConstAddr),
     Global(GlobalAddr),
@@ -53,14 +53,22 @@ impl Display for LocalAddr {
 
 #[derive(Debug)]
 pub enum Inst {
-    #[allow(dead_code)]
     Nop,
-    PushConst(ConstAddr),
-    PushGlobal(GlobalAddr),
-    PushLocal(LocalAddr),
+    /// Takes value from constant slot and puts it on eval stack.
+    LoadConst(ConstAddr),
+    /// Takes value from global slot and puts it on eval stack.
+    LoadGlobal(GlobalAddr),
+    /// Takes value from local slot and puts it on eval stack.
+    LoadLocal(LocalAddr),
+    /// Takes value from eval stack and puts it into global slot.
     StoreGlobal(GlobalAddr),
+    /// Takes value from eval stack and puts it into local slot.
     StoreLocal(LocalAddr),
     Pop,
+    InitMapIter,
+    LoadKey,
+    LoadItem,
+    Incr,
     Add,
     Sub,
     Mul,
@@ -73,20 +81,43 @@ pub enum Inst {
     Neq,
     CallBuiltin(u32, u32), // function index, arg count
     Jump(u32),
+    JumpIfNull(u32),
     JumpIfFalsy(u32),
     JumpIfTruthy(u32),
+}
+
+impl Inst {
+    fn store(addr: Addr) -> Self {
+        match addr {
+            Addr::Const(_) => panic!("Cannot store to constant address"),
+            Addr::Global(gaddr) => Self::StoreGlobal(gaddr),
+            Addr::Local(laddr) => Self::StoreLocal(laddr),
+        }
+    }
+
+    fn load(addr: Addr) -> Self {
+        match addr {
+            Addr::Const(caddr) => Self::LoadConst(caddr),
+            Addr::Global(gaddr) => Self::LoadGlobal(gaddr),
+            Addr::Local(laddr) => Self::LoadLocal(laddr),
+        }
+    }
 }
 
 impl Display for Inst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Inst::Nop => write!(f, "NOP"),
-            Inst::PushConst(addr) => write!(f, "PUSH_CONST {}", addr.0),
-            Inst::PushGlobal(addr) => write!(f, "PUSH_GLOBAL {}", addr.0),
-            Inst::PushLocal(addr) => write!(f, "PUSH_LOCAL {}", addr.0),
+            Inst::LoadConst(addr) => write!(f, "PUSH_CONST {}", addr.0),
+            Inst::LoadGlobal(addr) => write!(f, "PUSH_GLOBAL {}", addr.0),
+            Inst::LoadLocal(addr) => write!(f, "PUSH_LOCAL {}", addr.0),
             Inst::StoreGlobal(addr) => write!(f, "STORE_GLOBAL {}", addr.0),
             Inst::StoreLocal(addr) => write!(f, "STORE_LOCAL {}", addr.0),
             Inst::Pop => write!(f, "POP"),
+            Inst::InitMapIter => write!(f, "INIT_MAP_ITER"),
+            Inst::LoadKey => write!(f, "LOAD_KEY"),
+            Inst::LoadItem => write!(f, "LOAD_ITEM"),
+            Inst::Incr => write!(f, "INCR"),
             Inst::Add => write!(f, "ADD"),
             Inst::Sub => write!(f, "SUB"),
             Inst::Mul => write!(f, "MUL"),
@@ -101,6 +132,7 @@ impl Display for Inst {
                 write!(f, "CALL_BUILTIN {} {}", func_index, arg_count)
             }
             Inst::Jump(target) => write!(f, "JUMP {}", target),
+            Inst::JumpIfNull(target) => write!(f, "JUMP_IF_NULL {}", target),
             Inst::JumpIfFalsy(target) => write!(f, "JUMP_IF_FALSY {}", target),
             Inst::JumpIfTruthy(target) => write!(f, "JUMP_IF_TRUTHY {}", target),
         }
@@ -131,7 +163,7 @@ struct ScopeData<'a> {
     declarations: Vec<&'a str>,
     /// Stored at the root of the scope stack for function scopes.
     fn_data: Option<FnData>,
-    // loop_data: Option<LoopData>,
+    loop_data: Option<LoopData>,
 }
 
 #[derive(Debug, Default)]
@@ -144,8 +176,6 @@ struct FnData {
 
 #[derive(Debug)]
 struct LoopData {
-    frame_ptr: u32,
-    stack_ptr: u32,
     breaks: Vec<u32>,
     continues: Vec<u32>,
 }
@@ -166,6 +196,9 @@ pub struct Compilation<'a> {
     cur_stack_ptr_offset: u32,
 }
 
+const ZERO_CONST_ADDR: ConstAddr = ConstAddr(0);
+const NEG_ONE_ADDR: ConstAddr = ConstAddr(1);
+
 impl<'a> Compilation<'a> {
     fn new(tokens: &'a [Token]) -> Self {
         let mut builtins = HashMap::new();
@@ -174,7 +207,7 @@ impl<'a> Compilation<'a> {
         }
         Compilation {
             instructions: Vec::new(),
-            constants: Vec::new(),
+            constants: vec![const { Value::smi(0) }, const { Value::smi(-1) }],
             globals: Vec::new(),
             builtins,
             functions: HashMap::new(),
@@ -296,17 +329,17 @@ impl<'a> Compilation<'a> {
         match &expr.kind {
             AstNodeKind::Literal(literal) => {
                 let addr = self.push_literal(literal);
-                self.push_instruction(Inst::PushConst(addr), expr);
+                self.push_instruction(Inst::LoadConst(addr), expr);
             }
             AstNodeKind::Variable(name) => {
                 let addr = self.variable_addr(name, expr, to_decl);
                 match addr {
                     Addr::Const(_) => self.fatal("Cannot use constant as variable", expr),
                     Addr::Global(addr) => {
-                        self.push_instruction(Inst::PushGlobal(addr), expr);
+                        self.push_instruction(Inst::LoadGlobal(addr), expr);
                     }
                     Addr::Local(addr) => {
-                        self.push_instruction(Inst::PushLocal(addr), expr);
+                        self.push_instruction(Inst::LoadLocal(addr), expr);
                     }
                 }
             }
@@ -484,100 +517,102 @@ impl<'a> Compilation<'a> {
         // self.push_instruction(Inst::load_addr(dst, FN_RETURN_VALUE_REG), node);
     }
 
+    // If the iterable is an expression, it needs to be stored somwhere.
+    const FOR_ITERABLE_TEMP_VAR: &'static str = "__for_iterable_temp";
+    // Index needs to be stored somewhere.
+    const FOR_INDEX_TEMP_VAR: &'static str = "__for_index_temp";
+    // Even if not assigned to a variable, the key needs to be stored somewhere.
+    const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
+
     fn compile_loop(&mut self, node: &'a AstNode) {
-        todo!()
-        // let (body, loop_continue_ip, loop_exit_inst_index, index_addr) =
-        //     if let AstNodeKind::ForLoop(key, item, collection, body) = &node.kind {
-        //         self.block_start(body, None, Some(node), false);
-        //
-        //         let iterable_addr = self.variable_addr(Self::FOR_ITERABLE_TEMP_VAR, node, None);
-        //
-        //         self.compile_expression(collection, Some(Self::FOR_ITERABLE_TEMP_VAR));
-        //         self.push_instruction(Inst::pop(iterable_addr), collection);
-        //
-        //         self.push_instruction(Inst::init_map_iteration_list(iterable_addr), node);
-        //
-        //         let index_addr = self.variable_addr(Self::FOR_INDEX_TEMP_VAR, node, None);
-        //         self.push_instruction(Inst::load_int(index_addr, 0), node);
-        //
-        //         let loop_continue_ip = self.cur_inst_ptr();
-        //
-        //         let (key_var_name, key_node) = if let Some(key_node) = key {
-        //             (
-        //                 key_node.get_var_name().expect("Parsed correctly"),
-        //                 key_node.as_ref(),
-        //             )
-        //         } else {
-        //             (Self::FOR_KEY_TEMP_VAR, node)
-        //         };
-        //         let key_addr = self.variable_addr(key_var_name, key_node, None);
-        //         self.push_instruction(
-        //             Inst::load_iteration_key(key_addr, iterable_addr, index_addr),
-        //             key_node,
-        //         );
-        //
-        //         let loop_exit_inst_index = self.cur_inst_ptr();
-        //         // Placeholder
-        //         self.push_instruction(Inst::jump_if_zero(0, SUCCESS_FLAG_REG), node);
-        //
-        //         if let Some(item_node) = item {
-        //             let item_var_name = item_node.get_var_name().expect("Parsed correctly");
-        //             let item_addr = self.variable_addr(item_var_name, item_node, None);
-        //             self.push_instruction(
-        //                 Inst::load_collection_item(item_addr, iterable_addr, key_addr),
-        //                 item_node,
-        //             );
-        //         }
-        //
-        //         self.compile_block(body);
-        //
-        //         self.push_instruction(Inst::incr(index_addr), node);
-        //
-        //         (
-        //             body,
-        //             Some(loop_continue_ip),
-        //             Some(loop_exit_inst_index),
-        //             Some(index_addr),
-        //         )
-        //     } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
-        //         self.block_start(body, None, None, true);
-        //
-        //         let loop_continue_ip = self.cur_inst_ptr();
-        //
-        //         let (cond_addr, cond_val) = self.compile_expression(condition, None);
-        //
-        //         let const_cond_true = cond_val.map(|v| !v.is_falsy());
-        //
-        //         let loop_exit_inst_index = self.cur_inst_ptr();
-        //         // Placeholder
-        //         self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
-        //
-        //         self.compile_block(body);
-        //
-        //         (
-        //             body,
-        //             Some(loop_continue_ip),
-        //             Some(loop_exit_inst_index),
-        //             None,
-        //         )
-        //     } else {
-        //         panic!("Should be parsed correctly");
-        //     };
-        // if let Some(loop_continue_ip) = loop_continue_ip {
-        //     self.push_instruction(Inst::jump(loop_continue_ip), node);
-        // }
-        //
-        // if let Some(loop_exit_inst_index) = loop_exit_inst_index {
-        //     let loop_end_ip = self.cur_inst_ptr();
-        //     self.inst_mut(loop_exit_inst_index)
-        //         .set_jump_target(loop_end_ip);
-        // }
-        //
-        // let mut continues = Vec::new();
-        // std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
-        // let mut breaks = Vec::new();
-        // std::mem::swap(&mut breaks, &mut self.loop_data_mut().breaks);
-        //
+        let (body, loop_continue_ip, loop_exit_jump_ip, index_addr) =
+            if let AstNodeKind::ForLoop(key, item, iterable, body) = &node.kind {
+                self.block_start(body, None, Some(node), false);
+
+                let iterable_addr = self.declare_variable(Self::FOR_ITERABLE_TEMP_VAR, iterable);
+                self.compile_expression(iterable, Some(Self::FOR_ITERABLE_TEMP_VAR));
+                self.push_instruction(Inst::store(iterable_addr), iterable);
+                self.push_instruction(Inst::load(iterable_addr), iterable);
+                self.push_instruction(Inst::InitMapIter, iterable);
+
+                let index_addr = self.declare_variable(Self::FOR_INDEX_TEMP_VAR, body);
+                self.push_instruction(Inst::LoadConst(ZERO_CONST_ADDR), body);
+                self.push_instruction(Inst::store(index_addr), body);
+
+                let loop_continue_ip = self.cur_inst_ptr();
+
+                let (key_var_name, key_node) = if let Some(key_node) = key {
+                    (
+                        key_node.get_var_name().expect("Parsed correctly"),
+                        key_node.as_ref(),
+                    )
+                } else {
+                    (Self::FOR_KEY_TEMP_VAR, node)
+                };
+                let key_addr = self.declare_variable(key_var_name, key_node);
+
+                self.push_instruction(Inst::load(iterable_addr), body);
+                self.push_instruction(Inst::load(index_addr), body);
+                self.push_instruction(Inst::LoadKey, key_node);
+                self.push_instruction(Inst::store(key_addr), body);
+                self.push_instruction(Inst::load(key_addr), key_node);
+
+                let loop_exit_jump_ip = self.cur_inst_ptr();
+                // Placeholder
+                self.push_instruction(Inst::Nop, node);
+
+                if let Some(item_node) = item {
+                    let item_var_name = item_node.get_var_name().expect("Parsed correctly");
+                    let item_addr = self.declare_variable(item_var_name, item_node);
+                    self.push_instruction(Inst::load(iterable_addr), item_node);
+                    self.push_instruction(Inst::load(key_addr), item_node);
+                    self.push_instruction(Inst::LoadItem, item_node);
+                    self.push_instruction(Inst::store(item_addr), item_node);
+                }
+
+                self.compile_block(body);
+
+                self.push_instruction(Inst::load(index_addr), node);
+                self.push_instruction(Inst::Incr, node);
+                self.push_instruction(Inst::store(index_addr), node);
+
+                (body, loop_continue_ip, loop_exit_jump_ip, Some(index_addr))
+            } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
+                todo!();
+                // self.block_start(body, None, None, true);
+                //
+                // let loop_continue_ip = self.cur_inst_ptr();
+                //
+                // let (cond_addr, cond_val) = self.compile_expression(condition, None);
+                //
+                // let const_cond_true = cond_val.map(|v| !v.is_falsy());
+                //
+                // let loop_exit_inst_index = self.cur_inst_ptr();
+                // // Placeholder
+                // self.push_instruction(Inst::jump_if_zero(0, cond_addr), node);
+                //
+                // self.compile_block(body);
+                //
+                // (
+                //     body,
+                //     Some(loop_continue_ip),
+                //     Some(loop_exit_inst_index),
+                //     None,
+                // )
+            } else {
+                panic!("Should be parsed correctly");
+            };
+
+        self.push_instruction(Inst::Jump(loop_continue_ip), node);
+
+        let loop_end_ip = self.cur_inst_ptr();
+        *self.inst_mut(loop_exit_jump_ip) = Inst::JumpIfNull(loop_end_ip);
+
+        let mut continues = Vec::new();
+        std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
+        let mut breaks = Vec::new();
+        std::mem::swap(&mut breaks, &mut self.loop_data_mut().breaks);
+
         // if let Some(loop_continue_ip) = loop_continue_ip {
         //     for continue_index in continues {
         //         if let Some(index_addr) = index_addr {
@@ -591,11 +626,11 @@ impl<'a> Compilation<'a> {
         //         }
         //     }
         // }
-        //
-        // self.block_end(body);
-        //
+
+        self.block_end(body);
+
         // let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
-        //
+
         // for break_index in breaks {
         //     self.inst_mut(break_index)
         //         .set_jump_target(loop_end_after_sp_reset_ip);
@@ -657,13 +692,6 @@ impl<'a> Compilation<'a> {
             *self.inst_mut(if_jump_ip) = Inst::JumpIfFalsy(after_if_ip);
         }
     }
-
-    // // If the iterable is an expression, it needs to be stored somwhere.
-    // const FOR_ITERABLE_TEMP_VAR: &'static str = "__for_iterable_temp";
-    // // Index needs to be stored somewhere.
-    // const FOR_INDEX_TEMP_VAR: &'static str = "__for_index_temp";
-    // // Even if not assigned to a variable, the key needs to be stored somewhere.
-    // const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
 
     fn block_start(
         &mut self,
@@ -742,6 +770,10 @@ impl<'a> Compilation<'a> {
         // }
 
         let fn_data = fn_node.map(|_| FnData::default());
+        let loop_data = for_loop_node.map(|_| LoopData {
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
         //
         // let loop_data = if for_loop_node.is_some() || while_loop {
         //     Some(LoopData {
@@ -757,6 +789,7 @@ impl<'a> Compilation<'a> {
         self.scopes.push(ScopeData {
             declarations: Vec::new(),
             fn_data,
+            loop_data,
             // frame_ptr,
             // fn_data,
             // loop_data,
@@ -775,20 +808,20 @@ impl<'a> Compilation<'a> {
     }
 
     fn loop_data(&self) -> &LoopData {
-        // for scope in self.scopes.iter().rev() {
-        //     if let Some(loop_data) = &scope.loop_data {
-        //         return loop_data;
-        //     }
-        // }
+        for scope in self.scopes.iter().rev() {
+            if let Some(loop_data) = &scope.loop_data {
+                return loop_data;
+            }
+        }
         panic!("No loop data found in current scopes");
     }
 
     fn loop_data_mut(&mut self) -> &mut LoopData {
-        // for scope in self.scopes.iter_mut().rev() {
-        //     if let Some(loop_data) = &mut scope.loop_data {
-        //         return loop_data;
-        //     }
-        // }
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(loop_data) = &mut scope.loop_data {
+                return loop_data;
+            }
+        }
         panic!("No loop data found in current scopes");
     }
 

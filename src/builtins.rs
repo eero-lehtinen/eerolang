@@ -89,71 +89,65 @@ pub fn builtin_not(args: &[Value]) -> ProgramFnRes {
     Ok(Value::smi(if arg.is_falsy() { 1 } else { 0 }))
 }
 
-pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
-    let mut w = std::io::stdout();
-
-    let print_inner = |item: &Value, w: &mut Stdout| match item.as_value_ref() {
-        ValueRef::Smi(ii) => {
-            write!(w, "{}", ii).unwrap();
+fn print_inner(item: &Value, depth: u32, w: &mut Stdout) {
+    match item.as_value_ref() {
+        ValueRef::Null => {
+            write!(w, "null").unwrap();
         }
-        ValueRef::Float(ff) => {
-            write!(w, "{}", ff).unwrap();
+        ValueRef::Smi(int) => {
+            write!(w, "{}", int).unwrap();
+        }
+        ValueRef::Float(f) => {
+            write!(w, "{}", f).unwrap();
         }
         ValueRef::Range(r_start, r_end) => {
             write!(w, "{}-{}", r_start, r_end).unwrap();
         }
-        ValueRef::String(ss) => {
-            write!(w, "{}", ss).unwrap();
+        ValueRef::String(s) => {
+            write!(w, "{}", s).unwrap();
         }
-        ValueRef::List(_) => {
-            write!(w, "<nested list>").unwrap();
+        ValueRef::List(l) => {
+            if depth > 2 {
+                write!(w, "[...]").unwrap();
+                return;
+            }
+            write!(w, "[").unwrap();
+            for (j, item) in l.borrow().iter().enumerate() {
+                print_inner(item, depth + 1, w);
+                if j < l.borrow().len() - 1 {
+                    write!(w, ", ").unwrap();
+                }
+            }
+            write!(w, "]").unwrap();
         }
-        ValueRef::Map(_) => {
-            write!(w, "<nested map>").unwrap();
+        ValueRef::Map(m) => {
+            if depth > 2 {
+                write!(w, "{{...}}").unwrap();
+                return;
+            }
+            write!(w, "{{").unwrap();
+            let map = &m.borrow().inner;
+            for (j, (key, value)) in map.iter().enumerate() {
+                let key = match key.as_value_ref() {
+                    ValueRef::String(s) => s,
+                    _ => unreachable!(),
+                };
+                write!(w, "{}: ", key).unwrap();
+                print_inner(value, depth + 1, w);
+                if j < map.len() - 1 {
+                    write!(w, ", ").unwrap();
+                }
+            }
+            write!(w, "}}").unwrap();
         }
     };
+}
+
+pub fn builtin_print(args: &[Value]) -> ProgramFnRes {
+    let mut w = std::io::stdout();
 
     for (i, arg) in args.iter().enumerate() {
-        match arg.as_value_ref() {
-            ValueRef::Smi(int) => {
-                write!(&mut w, "{}", int).unwrap();
-            }
-            ValueRef::Float(f) => {
-                write!(&mut w, "{}", f).unwrap();
-            }
-            ValueRef::Range(r_start, r_end) => {
-                write!(&mut w, "{}-{}", r_start, r_end).unwrap();
-            }
-            ValueRef::String(s) => {
-                write!(&mut w, "{}", s).unwrap();
-            }
-            ValueRef::List(l) => {
-                write!(&mut w, "[").unwrap();
-                for (j, item) in l.borrow().iter().enumerate() {
-                    print_inner(item, &mut w);
-                    if j < l.borrow().len() - 1 {
-                        write!(&mut w, ", ").unwrap();
-                    }
-                }
-                write!(&mut w, "]").unwrap();
-            }
-            ValueRef::Map(m) => {
-                write!(&mut w, "{{").unwrap();
-                let map = &m.borrow().inner;
-                for (j, (key, value)) in map.iter().enumerate() {
-                    let key = match key.as_value_ref() {
-                        ValueRef::String(s) => s,
-                        _ => unreachable!(),
-                    };
-                    write!(&mut w, "{}: ", key).unwrap();
-                    print_inner(value, &mut w);
-                    if j < map.len() - 1 {
-                        write!(&mut w, ", ").unwrap();
-                    }
-                }
-                write!(&mut w, "}}").unwrap();
-            }
-        }
+        print_inner(arg, 0, &mut w);
         if i < args.len() - 1 {
             write!(&mut w, " ").unwrap();
         }
@@ -253,6 +247,7 @@ pub fn builtin_float(args: &[Value]) -> ProgramFnRes {
 
 fn write_str(w: &mut impl Write, value: &Value) {
     match value.as_value_ref() {
+        ValueRef::Null => write!(w, "null").unwrap(),
         ValueRef::Smi(i) => write!(w, "{}", i).unwrap(),
         ValueRef::Float(f) => write!(w, "{}", f).unwrap(),
         ValueRef::String(s) => write!(w, "{}", s).unwrap(),

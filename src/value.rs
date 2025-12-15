@@ -18,6 +18,7 @@ pub struct Value {
 }
 
 pub enum ValueRef<'a> {
+    Null,
     Smi(i32),
     Float(f64),
     Range(i64, i64),
@@ -52,6 +53,13 @@ impl Value {
 
         Self {
             bits,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn null() -> Self {
+        Self {
+            bits: 0,
             _marker: PhantomData,
         }
     }
@@ -124,7 +132,15 @@ impl Value {
     }
 
     pub fn is_rc(&self) -> bool {
-        !self.is_smi()
+        !self.is_null() && !self.is_smi()
+    }
+
+    pub fn is_string(&self) -> bool {
+        matches!(self.as_value_ref(), ValueRef::String(_))
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.bits == 0
     }
 
     pub fn as_int(&self) -> Option<i64> {
@@ -147,6 +163,9 @@ impl Value {
         if self.is_smi() {
             ValueRef::Smi((self.bits >> 32) as i32)
         } else {
+            if self.is_null() {
+                return ValueRef::Null;
+            }
             let ptr = self.bits as *const ValueInner;
             unsafe {
                 match &*ptr {
@@ -158,10 +177,6 @@ impl Value {
                 }
             }
         }
-    }
-
-    pub fn is_string(&self) -> bool {
-        matches!(self.as_value_ref(), ValueRef::String(_))
     }
 
     pub fn add(&self, other: &Self) -> OpResult {
@@ -189,6 +204,7 @@ impl Value {
 
     fn eq_impl(&self, other: &Self) -> Option<bool> {
         let res = match (self.as_value_ref(), other.as_value_ref()) {
+            (ValueRef::Null, ValueRef::Null) => true,
             (ValueRef::Smi(a), ValueRef::Smi(b)) => a == b,
             (ValueRef::Smi(a), ValueRef::Float(b)) => a as f64 == b,
             (ValueRef::Float(a), ValueRef::Smi(b)) => a == b as f64,
@@ -230,6 +246,7 @@ impl Value {
 
     pub fn is_falsy(&self) -> bool {
         match self.as_value_ref() {
+            ValueRef::Null => true,
             ValueRef::Smi(i) => i == 0,
             ValueRef::Float(f) => f == 0.0,
             ValueRef::Range(_, _) => false,
@@ -331,7 +348,7 @@ impl Hash for Value {
 
 impl Default for Value {
     fn default() -> Self {
-        Self::smi(0)
+        Self::null()
     }
 }
 
@@ -369,6 +386,7 @@ impl Clone for Value {
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.as_value_ref() {
+            ValueRef::Null => write!(f, "Null"),
             ValueRef::Smi(i) => write!(f, "Smi({})", i),
             ValueRef::Float(fl) => write!(f, "Float({})", fl),
             ValueRef::Range(start, end) => write!(f, "Range({}, {})", start, end),
@@ -413,6 +431,7 @@ impl std::fmt::Display for Value {
             return write!(f, "int {}", i);
         }
         match self.as_value_ref() {
+            ValueRef::Null => write!(f, "null"),
             ValueRef::Float(fl) => write!(f, "float {}", fl),
             ValueRef::Range(start, end) => write!(f, "range {}-{}", start, end),
             ValueRef::String(s) => write!(f, "str \"{}\"", s),
@@ -453,6 +472,7 @@ impl std::fmt::Display for Value {
 
 pub fn type_display(values: &[Value]) -> String {
     let tstr = |value: &Value| match value.as_value_ref() {
+        ValueRef::Null => "null",
         ValueRef::Smi(_) => "int",
         ValueRef::Float(_) => "float",
         ValueRef::Range(_, _) => "range",

@@ -1,3 +1,5 @@
+use std::ops::DerefMut;
+
 use log::{info, trace};
 
 use crate::{
@@ -198,7 +200,7 @@ impl<'a> Vm<'a> {
                 Inst::Nop => {
                     trace!("Nop");
                 }
-                Inst::PushConst(caddr) => {
+                Inst::LoadConst(caddr) => {
                     let value = self.constant(caddr);
                     trace!(
                         "Push constant {} from {} to eval stack",
@@ -207,7 +209,7 @@ impl<'a> Vm<'a> {
                     );
                     self.push_eval(value.clone());
                 }
-                Inst::PushGlobal(gaddr) => {
+                Inst::LoadGlobal(gaddr) => {
                     let value = self.global(gaddr);
                     trace!(
                         "Push global {} from {} to eval stack",
@@ -216,7 +218,7 @@ impl<'a> Vm<'a> {
                     );
                     self.push_eval(value.clone());
                 }
-                Inst::PushLocal(laddr) => {
+                Inst::LoadLocal(laddr) => {
                     let value = self.local(laddr);
                     trace!(
                         "Push local {} from {} to eval stack",
@@ -237,6 +239,108 @@ impl<'a> Vm<'a> {
                         self.eval_stack(self.eval_stack_ptr).dbg_display()
                     );
                     self.eval_stack_ptr -= 1;
+                }
+                Inst::InitMapIter => {
+                    let maybe_map = self.eval_stack(0);
+                    match maybe_map.as_value_ref() {
+                        ValueRef::Map(map_rc) => {
+                            let mut map = map_rc.borrow_mut();
+                            let Map { inner, iter_keys } = map.deref_mut();
+                            if iter_keys.is_empty() {
+                                for key in inner.keys() {
+                                    iter_keys.push(key.clone());
+                                }
+                            }
+                            trace!(
+                                "Initialized map iterator with keys: {}",
+                                iter_keys
+                                    .iter()
+                                    .map(|k| k.dbg_display())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+                        _ => {
+                            trace!("InitMapIter called on non-map value, ignoring");
+                        }
+                    }
+                    self.eval_stack_ptr -= 1;
+                }
+                Inst::LoadKey => {
+                    let iterable = self.eval_stack(1);
+                    let index_value = self.eval_stack(0);
+                    let Some(index) = index_value.as_int() else {
+                        self.fatal(&format!(
+                            "Expected (int) as index, got {:?}",
+                            index_value.dbg_display()
+                        ));
+                    };
+                    let key = match iterable.as_value_ref() {
+                        ValueRef::List(list_rc) => {
+                            let list = list_rc.borrow();
+                            if index < 0 || index >= list.len() as i64 {
+                                None
+                            } else {
+                                Some(Value::int(index))
+                            }
+                        }
+                        ValueRef::Range(start, end) => {
+                            if index < 0 || index >= (end - start) {
+                                None
+                            } else {
+                                Some(Value::int(start + index))
+                            }
+                        }
+                        ValueRef::Map(map_rc) => {
+                            let map = map_rc.borrow();
+                            if index < 0 || index >= map.iter_keys.len() as i64 {
+                                None
+                            } else {
+                                Some(map.iter_keys[index as usize].clone())
+                            }
+                        }
+                        _ => self.fatal(&format!(
+                            "Expected (list/range/map) as iterable, got {:?}",
+                            iterable.dbg_display()
+                        )),
+                    };
+                    self.eval_stack_ptr -= 1;
+
+                    *self.eval_stack_mut(0) = match key {
+                        Some(k) => {
+                            trace!("LoadKey: found key: {:?}", k.dbg_display());
+                            k
+                        }
+                        None => {
+                            trace!("Index out of bounds in for loop iterable, using null");
+                            Value::null()
+                        }
+                    };
+                }
+                Inst::LoadItem => {
+                    match builtin_get(
+                        &self.eval_stack[self.eval_stack_ptr - 1..=self.eval_stack_ptr],
+                    ) {
+                        Ok(value) => {
+                            trace!("LoadKey: loaded value: {:?}", value.dbg_display());
+                            self.eval_stack_ptr -= 1;
+                            self.eval_stack_mut(0).clone_from(&value);
+                        }
+                        Err(e) => self.fatal(&format!("Wrong value in for loop iterable: {}", e)),
+                    }
+                }
+                Inst::Incr => {
+                    let v = self.eval_stack(0);
+                    if let Some(i) = v.as_int() {
+                        trace!(
+                            "Increment value {} to {}",
+                            v.dbg_display(),
+                            Value::int(i + 1).dbg_display()
+                        );
+                        *self.eval_stack_mut(0) = Value::int(i + 1);
+                    } else {
+                        self.fatal(&format!("Expected (int), got {:?}", v.dbg_display()));
+                    }
                 }
                 Inst::Add => bop!(add, args, Operator::Add),
                 Inst::Sub => bop!(sub, args, Operator::Sub),
@@ -269,6 +373,19 @@ impl<'a> Vm<'a> {
                 Inst::Jump(target) => {
                     trace!("Jump from {} to {}", self.inst_ptr, target);
                     self.inst_ptr = target as usize;
+                }
+                Inst::JumpIfNull(target) => {
+                    let cond_value = self.eval_stack(0);
+                    trace!(
+                        "JumpIfNull from {} to {} if {} is null",
+                        self.inst_ptr,
+                        target,
+                        cond_value.dbg_display()
+                    );
+                    if cond_value.is_null() {
+                        self.inst_ptr = target as usize;
+                    }
+                    self.eval_stack_ptr -= 1;
                 }
                 Inst::JumpIfFalsy(target) => {
                     let cond_value = self.eval_stack(0);
