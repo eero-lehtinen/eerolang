@@ -525,7 +525,7 @@ impl<'a> Compilation<'a> {
     const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
 
     fn compile_loop(&mut self, node: &'a AstNode) {
-        let (body, loop_continue_ip, loop_exit_jump_ip, index_addr) =
+        let (body, loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip) =
             if let AstNodeKind::ForLoop(key, item, iterable, body) = &node.kind {
                 self.block_start(body, None, Some(node), false);
 
@@ -539,7 +539,7 @@ impl<'a> Compilation<'a> {
                 self.push_instruction(Inst::LoadConst(ZERO_CONST_ADDR), body);
                 self.push_instruction(Inst::store(index_addr), body);
 
-                let loop_continue_ip = self.cur_inst_ptr();
+                let loop_next_iteration_ip = self.cur_inst_ptr();
 
                 let (key_var_name, key_node) = if let Some(key_node) = key {
                     (
@@ -572,11 +572,17 @@ impl<'a> Compilation<'a> {
 
                 self.compile_block(body);
 
+                let loop_continue_ip = self.cur_inst_ptr();
                 self.push_instruction(Inst::load(index_addr), node);
                 self.push_instruction(Inst::Incr, node);
                 self.push_instruction(Inst::store(index_addr), node);
 
-                (body, loop_continue_ip, loop_exit_jump_ip, Some(index_addr))
+                (
+                    body,
+                    loop_next_iteration_ip,
+                    loop_continue_ip,
+                    loop_exit_jump_ip,
+                )
             } else if let AstNodeKind::WhileLoop(condition, body) = &node.kind {
                 todo!();
                 // self.block_start(body, None, None, true);
@@ -603,64 +609,40 @@ impl<'a> Compilation<'a> {
                 panic!("Should be parsed correctly");
             };
 
-        self.push_instruction(Inst::Jump(loop_continue_ip), node);
-
-        let loop_end_ip = self.cur_inst_ptr();
-        *self.inst_mut(loop_exit_jump_ip) = Inst::JumpIfNull(loop_end_ip);
+        self.push_instruction(Inst::Jump(loop_next_iteration_ip), node);
 
         let mut continues = Vec::new();
         std::mem::swap(&mut continues, &mut self.loop_data_mut().continues);
         let mut breaks = Vec::new();
         std::mem::swap(&mut breaks, &mut self.loop_data_mut().breaks);
 
-        // if let Some(loop_continue_ip) = loop_continue_ip {
-        //     for continue_index in continues {
-        //         if let Some(index_addr) = index_addr {
-        //             // Increment before continuing
-        //             self.inst_mut(continue_index).set_incr_dst(index_addr);
-        //             self.inst_mut(continue_index + 1)
-        //                 .set_jump_target(loop_continue_ip);
-        //         } else {
-        //             self.inst_mut(continue_index)
-        //                 .set_jump_target(loop_continue_ip);
-        //         }
-        //     }
-        // }
+        for continue_jump_ip in continues {
+            // Increment before continuing
+            *self.inst_mut(continue_jump_ip) = Inst::Jump(loop_continue_ip);
+        }
 
         self.block_end(body);
 
-        // let loop_end_after_sp_reset_ip = self.cur_inst_ptr();
+        let loop_end_ip = self.cur_inst_ptr();
+        *self.inst_mut(loop_exit_jump_ip) = Inst::JumpIfNull(loop_end_ip);
 
-        // for break_index in breaks {
-        //     self.inst_mut(break_index)
-        //         .set_jump_target(loop_end_after_sp_reset_ip);
-        // }
+        for break_jump_ip in breaks {
+            *self.inst_mut(break_jump_ip) = Inst::Jump(loop_end_ip);
+        }
     }
 
     fn compile_continue(&mut self, node: &'a AstNode) {
-        todo!();
-        // let sub_sp = self.cur_stack_ptr_offset - self.loop_data().stack_ptr;
-        // if sub_sp > 0 {
-        //     self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
-        // }
-        // let continue_ip = self.cur_inst_ptr();
-        // self.loop_data_mut().continues.push(continue_ip);
-        // // Placeholder
-        // self.push_instruction(Inst::incr(Addr::abs(0)), node);
-        // // Placeholder
-        // self.push_instruction(Inst::jump(0), node);
+        let continue_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(Inst::Nop, node);
+        self.loop_data_mut().continues.push(continue_ip);
     }
 
     fn compile_break(&mut self, node: &'a AstNode) {
-        todo!();
-        // let sub_sp = self.cur_stack_ptr_offset - self.loop_data().frame_ptr;
-        // if sub_sp > 0 {
-        //     self.push_instruction(Inst::sub_stack_pointer(sub_sp), node);
-        // }
-        // let break_ip = self.cur_inst_ptr();
-        // // Placeholder
-        // self.push_instruction(Inst::jump(0), node);
-        // self.loop_data_mut().breaks.push(break_ip);
+        let break_ip = self.cur_inst_ptr();
+        // Placeholder
+        self.push_instruction(Inst::Nop, node);
+        self.loop_data_mut().breaks.push(break_ip);
     }
 
     fn compile_if_statement(&mut self, node: &'a AstNode) {
