@@ -16,6 +16,12 @@ Usage:
 eerolang <file.eel>
 ```
 
+The instructions can also be stepped through (it shows even more info in a debug build):
+
+```sh
+eerolang <file.eel> --step
+```
+
 ## Motivation
 
 I couldn't think of a language to try this year for the [Advent of Code 2025](https://adventofcode.com/2025) challenge, so I decided to make my own. Check out [my solutions](https://github.com/eero-lehtinen/advent-of-code-2025) if you want. Also I've never made a language before.
