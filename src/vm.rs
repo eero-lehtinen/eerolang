@@ -26,6 +26,7 @@ pub struct Vm<'a> {
     globals: Vec<Value>,
     constants: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
+    stepping: bool,
 }
 
 fn placeholder_func(_: &[Value]) -> Result<Value, String> {
@@ -51,6 +52,7 @@ impl<'a> Vm<'a> {
             globals: vec![Value::default(); ctx.globals_count],
             constants: ctx.constants.clone(),
             builtins,
+            stepping: false,
         }
     }
 
@@ -172,7 +174,7 @@ impl<'a> Vm<'a> {
         }
     }
 
-    pub fn run(&mut self, step_through: bool) {
+    pub fn run(&mut self, stop_at_line: Option<usize>) {
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
                 let r = self.stack(0);
@@ -482,8 +484,14 @@ impl<'a> Vm<'a> {
                 }
             }
 
-            if step_through {
-                self.step(inst_ptr);
+            if let Some(stop_line) = stop_at_line {
+                let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
+                if token.line + 1 >= stop_line {
+                    self.stepping = true;
+                }
+                if self.stepping {
+                    self.step(inst_ptr);
+                }
             }
 
             if self.inst_ptr == inst_ptr {
@@ -512,7 +520,7 @@ impl<'a> Vm<'a> {
                 .map(|i| self.stack[i]
                     .dbg_display()
                     .chars()
-                    .take(10)
+                    .take(20)
                     .map(|c| if c == '\n' { '⏎' } else { c })
                     .collect::<String>())
                 .collect::<Vec<_>>()

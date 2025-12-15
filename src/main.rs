@@ -19,11 +19,15 @@ struct Cli {
     source_file: String,
 
     /// Step through execution with enter (shows extra stuff if built with debug mode)
-    #[clap(short, long)]
+    #[clap(long)]
     step: bool,
 
+    /// Break at a specific line number (requires --step)
+    #[clap(long, requires = "step")]
+    break_at: Option<usize>,
+
     /// Print tokens with colors
-    #[clap(short, long)]
+    #[clap(long)]
     tokens: bool,
 }
 
@@ -60,7 +64,8 @@ fn main() {
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();
-    Vm::new(compilation).run(cli.step);
+    let stop_at_line = cli.step.then_some(cli.break_at.unwrap_or(0));
+    Vm::new(compilation).run(stop_at_line);
     let exec_end = Instant::now();
 
     println!(
