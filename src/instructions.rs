@@ -44,16 +44,20 @@ impl Display for LocalAddr {
 #[derive(Debug)]
 pub enum Inst {
     Nop,
-    /// Takes value from constant slot and puts it on eval stack.
+    /// Takes value from constant slot and puts it on the stack.
     LoadConst(ConstAddr),
-    /// Takes value from global slot and puts it on eval stack.
+    /// Takes value from global slot and puts it on the stack.
     LoadGlobal(GlobalAddr),
-    /// Takes value from local slot and puts it on eval stack.
+    /// Takes value from local slot and puts it on the stack.
     LoadLocal(LocalAddr),
-    /// Takes value from eval stack and puts it into global slot.
+    /// Takes value from the stack and puts it into global slot.
     StoreGlobal(GlobalAddr),
-    /// Takes value from eval stack and puts it into local slot.
+    /// Takes value from the stack and puts it into local slot.
     StoreLocal(LocalAddr),
+    /// Like StoreGlobal but keeps value on the stack.
+    StoreGlobalKeep(GlobalAddr),
+    /// Like StoreLocal but keeps value on the stack.
+    StoreLocalKeep(LocalAddr),
     Pop,
     InitMapIter,
     LoadKey,
@@ -86,6 +90,13 @@ impl Inst {
         match addr {
             Addr::Global(gaddr) => Self::StoreGlobal(gaddr),
             Addr::Local(laddr) => Self::StoreLocal(laddr),
+        }
+    }
+
+    pub fn store_keep(addr: Addr) -> Self {
+        match addr {
+            Addr::Global(gaddr) => Self::StoreGlobalKeep(gaddr),
+            Addr::Local(laddr) => Self::StoreLocalKeep(laddr),
         }
     }
 
@@ -123,6 +134,8 @@ impl Display for Inst {
             Inst::LoadLocal(addr) => write!(f, "LOAD_LOCAL {}", addr.0),
             Inst::StoreGlobal(addr) => write!(f, "STORE_GLOBAL {}", addr.0),
             Inst::StoreLocal(addr) => write!(f, "STORE_LOCAL {}", addr.0),
+            Inst::StoreGlobalKeep(addr) => write!(f, "STORE_GLOBAL_KEEP {}", addr.0),
+            Inst::StoreLocalKeep(addr) => write!(f, "STORE_LOCAL_KEEP {}", addr.0),
             Inst::Pop => write!(f, "POP"),
             Inst::InitMapIter => write!(f, "INIT_MAP_ITER"),
             Inst::LoadKey => write!(f, "LOAD_KEY"),

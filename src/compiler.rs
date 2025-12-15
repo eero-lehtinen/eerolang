@@ -340,8 +340,7 @@ impl<'a> Compilation<'a> {
 
                 let iterable_addr = self.declare_variable(Self::FOR_ITERABLE_TEMP_VAR, iterable);
                 self.compile_expression(iterable, Some(Self::FOR_ITERABLE_TEMP_VAR));
-                self.push_instruction(Inst::store(iterable_addr), iterable);
-                self.push_instruction(Inst::load(iterable_addr), iterable);
+                self.push_instruction(Inst::store_keep(iterable_addr), iterable);
                 self.push_instruction(Inst::InitMapIter, iterable);
 
                 let index_addr = self.declare_variable(Self::FOR_INDEX_TEMP_VAR, body);
@@ -363,8 +362,7 @@ impl<'a> Compilation<'a> {
                 self.push_instruction(Inst::load(iterable_addr), body);
                 self.push_instruction(Inst::load(index_addr), body);
                 self.push_instruction(Inst::LoadKey, key_node);
-                self.push_instruction(Inst::store(key_addr), body);
-                self.push_instruction(Inst::load(key_addr), key_node);
+                self.push_instruction(Inst::store_keep(key_addr), body);
 
                 let loop_exit_jump_ip = self.cur_inst_ptr();
                 // Placeholder

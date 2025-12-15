@@ -78,6 +78,12 @@ impl<'a> Vm<'a> {
         unsafe { self.globals.get_unchecked(addr.0 as usize) }
     }
 
+    fn global_mut(&mut self, addr: GlobalAddr) -> &mut Value {
+        debug_assert!((addr.0 as usize) < self.globals.len());
+        // SAFETY: My things are correct.
+        unsafe { self.globals.get_unchecked_mut(addr.0 as usize) }
+    }
+
     fn local_pos(&self, addr: LocalAddr) -> usize {
         (self.frame_ptr as isize + addr.0 as isize) as usize
     }
@@ -87,6 +93,13 @@ impl<'a> Vm<'a> {
         debug_assert!(pos < self.stack.len());
         // SAFETY: My things are correct.
         unsafe { self.stack.get_unchecked(pos) }
+    }
+
+    fn local_mut(&mut self, addr: LocalAddr) -> &mut Value {
+        let pos = self.local_pos(addr);
+        debug_assert!(pos < self.stack.len());
+        // SAFETY: My things are correct.
+        unsafe { self.stack.get_unchecked_mut(pos) }
     }
 
     fn pop_to_local(&mut self, addr: LocalAddr) {
@@ -227,6 +240,24 @@ impl<'a> Vm<'a> {
                 }
                 Inst::StoreLocal(laddr) => {
                     self.pop_to_local(laddr);
+                }
+                Inst::StoreGlobalKeep(gaddr) => {
+                    let value = self.stack(0).clone();
+                    trace!(
+                        "Store global {} to {}, keeping on stack",
+                        value.dbg_display(),
+                        gaddr
+                    );
+                    *self.global_mut(gaddr) = value;
+                }
+                Inst::StoreLocalKeep(laddr) => {
+                    let value = self.stack(0).clone();
+                    trace!(
+                        "Store local {} to {}, keeping on stack",
+                        value.dbg_display(),
+                        laddr
+                    );
+                    *self.local_mut(laddr) = value;
                 }
                 Inst::Pop => {
                     trace!(
