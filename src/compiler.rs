@@ -527,9 +527,7 @@ impl<'a> Compilation<'a> {
     fn fn_data(&mut self) -> Option<&mut FnData> {
         self.scopes
             .get_mut(1)
-            .expect("At least two scopes exist for function scope")
-            .fn_data
-            .as_mut()
+            .and_then(|scope| scope.fn_data.as_mut())
     }
 
     fn compile_block_full(&mut self, block: &'a AstNode) {
