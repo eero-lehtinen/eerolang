@@ -104,7 +104,11 @@ fn print_inner(item: &Value, depth: u32, w: &mut Stdout) {
             write!(w, "{}-{}", r.start, r.end).unwrap();
         }
         ValueRef::String(s) => {
-            write!(w, "{}", s).unwrap();
+            if depth == 0 {
+                write!(w, "{}", s).unwrap();
+            } else {
+                write!(w, "\"{}\"", s).unwrap();
+            }
         }
         ValueRef::List(l) => {
             if depth > 2 {
