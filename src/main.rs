@@ -22,10 +22,6 @@ struct Cli {
     #[clap(long)]
     step: bool,
 
-    /// Break at a specific line number (requires --step)
-    #[clap(long, requires = "step")]
-    break_at: Option<usize>,
-
     /// Print tokens with colors
     #[clap(long)]
     tokens: bool,
@@ -64,8 +60,7 @@ fn main() {
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();
-    let stop_at_line = cli.step.then_some(cli.break_at.unwrap_or(0));
-    Vm::new(compilation).run(stop_at_line);
+    Vm::new(compilation).run(cli.step);
     let exec_end = Instant::now();
 
     println!(

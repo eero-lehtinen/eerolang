@@ -1,4 +1,4 @@
-use std::ops::DerefMut;
+use std::{io::Write, ops::DerefMut};
 
 use log::{info, trace};
 
@@ -26,6 +26,7 @@ pub struct Vm<'a> {
     globals: Vec<Value>,
     constants: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
+    stop_at_line: Option<usize>,
     stepping: bool,
 }
 
@@ -52,6 +53,7 @@ impl<'a> Vm<'a> {
             globals: vec![Value::default(); ctx.globals_count],
             constants: ctx.constants.clone(),
             builtins,
+            stop_at_line: None,
             stepping: false,
         }
     }
@@ -188,7 +190,8 @@ impl<'a> Vm<'a> {
         }
     }
 
-    pub fn run(&mut self, stop_at_line: Option<usize>) {
+    pub fn run(&mut self, step: bool) {
+        self.stepping = step;
         macro_rules! bop {
             ($fn:ident, $data:expr, $op:expr) => {{
                 let r = self.stack(0);
@@ -507,14 +510,8 @@ impl<'a> Vm<'a> {
                 }
             }
 
-            if let Some(stop_line) = stop_at_line {
-                let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
-                if token.line + 1 >= stop_line {
-                    self.stepping = true;
-                }
-                if self.stepping {
-                    self.step(inst_ptr);
-                }
+            if self.stepping {
+                self.step(inst_ptr);
             }
 
             if self.inst_ptr == inst_ptr {
@@ -539,6 +536,14 @@ impl<'a> Vm<'a> {
     }
 
     fn step(&mut self, inst_ptr: usize) {
+        if let Some(stop_line) = self.stop_at_line {
+            let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
+            if token.line != stop_line {
+                return;
+            }
+            self.stop_at_line = None;
+        }
+
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
         let char_col = find_source_char_col(token.line, token.byte_col);
 
@@ -579,7 +584,7 @@ impl<'a> Vm<'a> {
                     self.globals[i]
                         .dbg_display()
                         .chars()
-                        .take(10)
+                        .take(20)
                         .map(|c| if c == '\n' { '⏎' } else { c })
                         .collect::<String>()
                 ))
@@ -587,7 +592,33 @@ impl<'a> Vm<'a> {
                 .join(", ")
         );
 
+        print!("Press enter or type a line number: ");
         let mut input = String::new();
+        std::io::stdout().flush().unwrap();
         std::io::stdin().read_line(&mut input).unwrap();
+        println!();
+
+        let input = input.trim();
+        if let Ok(line_num) = input.parse::<usize>() {
+            let res = self
+                .tokens
+                .binary_search_by_key(&line_num.saturating_sub(1), |t| t.line);
+
+            let mut idx = match res {
+                Ok(idx) => idx,
+                Err(idx) => idx,
+            };
+
+            // Ignore comment tokens
+            while !self.ip_to_token.contains(&idx) {
+                idx += 1;
+                if idx >= self.tokens.len() {
+                    idx = self.tokens.len() - 1;
+                    break;
+                }
+            }
+
+            self.stop_at_line = Some(self.tokens[idx].line);
+        }
     }
 }
