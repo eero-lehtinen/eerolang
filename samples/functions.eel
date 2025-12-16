@@ -1,0 +1,7 @@
+fn func(x, y) {
+    z := x + y + 1
+    return z
+}
+
+f := func(5, 10)
+print(f)

@@ -387,9 +387,9 @@ impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.as_value_ref() {
             ValueRef::Null => write!(f, "NULL"),
-            ValueRef::Smi(i) => write!(f, "I{}", i),
-            ValueRef::Float(fl) => write!(f, "F{:.2}", fl),
-            ValueRef::Range(start, end) => write!(f, "R{},{}", start, end),
+            ValueRef::Smi(i) => write!(f, "{}", i),
+            ValueRef::Float(fl) => write!(f, "{:.2}", fl),
+            ValueRef::Range(start, end) => write!(f, "R{}-{}", start, end),
             ValueRef::String(s) => write!(f, "\"{}\"", s),
             ValueRef::List(lst) => {
                 write!(f, "[")?;

@@ -20,8 +20,8 @@ struct ScopeData<'a> {
 #[derive(Debug, Default)]
 struct FnData {
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
-    locals_count: u32,
-    params: Vec<String>,
+    local_names: Vec<String>,
+    param_names: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -36,10 +36,10 @@ pub struct Compilation<'a> {
     pub constants: Vec<Value>,
     /// Keeps track of variables declared outside of functions to figure out how much space to
     /// allocate at the start for globals.
-    pub globals_count: usize,
+    pub global_names: Vec<&'a str>,
     pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
-    /// Holds start ip, arg reguirements, local count
-    pub functions: HashMap<String, (u32, ArgsRequred, u32)>,
+    /// Holds start ip, arg names, local names
+    pub functions: HashMap<String, (u32, Vec<&'a str>, Vec<String>)>,
     pub tokens: &'a [Token],
     pub ip_to_token: Vec<usize>,
     scopes: Vec<ScopeData<'a>>,
@@ -57,7 +57,7 @@ impl<'a> Compilation<'a> {
         Compilation {
             instructions: Vec::new(),
             constants: vec![const { Value::null() }, const { Value::smi(0) }],
-            globals_count: 0,
+            global_names: Vec::new(),
             builtins,
             functions: HashMap::new(),
             tokens,
@@ -96,11 +96,11 @@ impl<'a> Compilation<'a> {
 
     fn declare_variable(&mut self, name: &'a str, node: &'a AstNode) -> Addr {
         let addr = if let Some(fn_data) = self.fn_data() {
-            fn_data.locals_count += 1;
-            Addr::Local(LocalAddr(fn_data.locals_count as i32 - 1))
+            fn_data.local_names.push(name.to_string());
+            Addr::Local(LocalAddr(fn_data.local_names.len() as i32))
         } else {
-            self.globals_count += 1;
-            Addr::Global(GlobalAddr(self.globals_count as u32 - 1))
+            self.global_names.push(name);
+            Addr::Global(GlobalAddr(self.global_names.len() as u32 - 1))
         };
 
         let decls = &mut self
@@ -239,9 +239,12 @@ impl<'a> Compilation<'a> {
 
         let fn_start_ip = self.cur_inst_ptr();
 
-        let args_required = ArgsRequred::Exact(params.len() as u32);
+        let param_names = params
+            .iter()
+            .map(|p| p.get_var_name().unwrap())
+            .collect::<Vec<_>>();
         self.functions
-            .insert(name.clone(), (fn_start_ip, args_required, 0));
+            .insert(name.clone(), (fn_start_ip, param_names, Vec::new()));
 
         self.block_start(body, Some(node), false);
 
@@ -254,11 +257,12 @@ impl<'a> Compilation<'a> {
 
         self.compile_block(body);
 
-        let locals_count = self
+        let local_names = self
             .fn_data()
             .expect("Function data should exist in function scope")
-            .locals_count;
-        self.functions.get_mut(name).unwrap().2 = locals_count;
+            .local_names
+            .clone();
+        self.functions.get_mut(name).unwrap().2 = local_names;
 
         self.block_end();
 
@@ -278,7 +282,7 @@ impl<'a> Compilation<'a> {
         let args_count = self
             .fn_data()
             .expect("Function data should exist in function scope")
-            .params
+            .param_names
             .len();
         self.push_instruction(Inst::Return(args_count as u32), node);
     }
@@ -319,12 +323,13 @@ impl<'a> Compilation<'a> {
                 Inst::CallBuiltin(func_index as u32, args.len() as u32),
                 node,
             );
-        } else if let Some(&(fn_start_ip, args_req, locals_count)) = self.functions.get(name) {
+        } else if let Some((fn_start_ip, decl_args, locals)) = self.functions.get(name) {
+            let args_req = ArgsRequred::Exact(decl_args.len() as u32);
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
             }
 
-            self.push_instruction(Inst::Call(fn_start_ip, locals_count), node);
+            self.push_instruction(Inst::Call(*fn_start_ip, locals.len() as u32), node);
         } else {
             self.fatal(&format!("Undefined function: {}", name), node);
         }
@@ -508,7 +513,7 @@ impl<'a> Compilation<'a> {
                 let param_name = param
                     .get_var_name()
                     .expect("Function argument should be a variable");
-                fn_data.params.push(param_name.to_string());
+                fn_data.param_names.push(param_name.to_string());
             }
             Some(fn_data)
         } else {

@@ -1,5 +1,6 @@
 use std::{io::Write, ops::DerefMut};
 
+use foldhash::HashMap;
 use log::{info, trace};
 
 use crate::{
@@ -8,7 +9,7 @@ use crate::{
     builtins::{ProgramFn, builtin_get},
     compiler::{Compilation, binary_op_err},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
-    tokenizer::{Operator, Token, find_source_char_col, report_source_pos},
+    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
     value::{Map, Value, ValueRef},
 };
 
@@ -24,8 +25,12 @@ pub struct Vm<'a> {
     frame_ptr: usize,
     stack_ptr: usize,
     globals: Vec<Value>,
+    global_names: Vec<&'a str>,
     constants: Vec<Value>,
     builtins: Vec<(ProgramFn, String)>,
+    /// Maps ip to (function name, parameter names, local variable names)
+    functions: HashMap<u32, (String, Vec<&'a str>, Vec<String>)>,
+    current_fns: Vec<u32>,
     stop_at_line: Option<usize>,
     stepping: bool,
 }
@@ -42,6 +47,17 @@ impl<'a> Vm<'a> {
             builtins[*index] = (*func, name.clone());
         }
 
+        let functions = ctx
+            .functions
+            .iter()
+            .map(|(name, (ip, param_names, local_names))| {
+                (
+                    *ip,
+                    (name.clone(), param_names.clone(), local_names.clone()),
+                )
+            })
+            .collect();
+
         Vm {
             instructions: ctx.instructions,
             ip_to_token: ctx.ip_to_token,
@@ -50,9 +66,12 @@ impl<'a> Vm<'a> {
             stack: vec![Value::default(); STACK_SIZE as usize],
             frame_ptr: 0,
             stack_ptr: 0,
-            globals: vec![Value::default(); ctx.globals_count],
+            globals: vec![Value::default(); ctx.global_names.len()],
+            global_names: ctx.global_names.clone(),
             constants: ctx.constants.clone(),
             builtins,
+            functions,
+            current_fns: Vec::new(),
             stop_at_line: None,
             stepping: false,
         }
@@ -102,6 +121,10 @@ impl<'a> Vm<'a> {
         unsafe { self.globals.get_unchecked_mut(addr.0 as usize) }
     }
 
+    fn pos_to_local(&self, pos: usize) -> LocalAddr {
+        LocalAddr((pos as isize - self.frame_ptr as isize) as i32)
+    }
+
     fn local_pos(&self, addr: LocalAddr) -> usize {
         (self.frame_ptr as isize + addr.0 as isize) as usize
     }
@@ -122,9 +145,9 @@ impl<'a> Vm<'a> {
 
     fn pop_to_local(&mut self, addr: LocalAddr) {
         trace!(
-            "Pop value {} from stack to local {}",
-            self.stack(self.stack_ptr).dbg_display(),
-            addr
+            "Pop value from stack to local {}={}",
+            self.local_item_name(addr),
+            self.stack(self.stack_ptr).dbg_display()
         );
         let local_pos = self.local_pos(addr);
         debug_assert!(local_pos < self.stack.len());
@@ -142,9 +165,9 @@ impl<'a> Vm<'a> {
 
     fn pop_to_global(&mut self, addr: GlobalAddr) {
         trace!(
-            "Pop value {} from stack to global {}",
+            "Pop value from stack to global {}={}",
+            self.global_names[addr.0 as usize],
             self.stack(self.stack_ptr).dbg_display(),
-            addr
         );
         let global_pos = addr.0 as usize;
         debug_assert!(global_pos < self.globals.len());
@@ -243,15 +266,19 @@ impl<'a> Vm<'a> {
                 Inst::LoadGlobal(gaddr) => {
                     let value = self.global(gaddr);
                     trace!(
-                        "Push global {} from {} to stack",
+                        "Push global {}={} to stack",
+                        self.global_names[gaddr.0 as usize],
                         value.dbg_display(),
-                        gaddr
                     );
                     self.push(value.clone());
                 }
                 Inst::LoadLocal(laddr) => {
                     let value = self.local(laddr);
-                    trace!("Push local {} from {} to stack", value.dbg_display(), laddr);
+                    trace!(
+                        "Push local {}={} to stack",
+                        self.local_item_name(laddr),
+                        value.dbg_display()
+                    );
                     self.push(value.clone());
                 }
                 Inst::StoreGlobal(gaddr) => {
@@ -263,18 +290,18 @@ impl<'a> Vm<'a> {
                 Inst::StoreGlobalKeep(gaddr) => {
                     let value = self.stack(0).clone();
                     trace!(
-                        "Store global {} to {}, keeping on stack",
+                        "Store global {}={}, keeping on stack",
+                        self.global_names[gaddr.0 as usize],
                         value.dbg_display(),
-                        gaddr
                     );
                     *self.global_mut(gaddr) = value;
                 }
                 Inst::StoreLocalKeep(laddr) => {
                     let value = self.stack(0).clone();
                     trace!(
-                        "Store local {} to {}, keeping on stack",
-                        value.dbg_display(),
-                        laddr
+                        "Store local {}={}, keeping on stack",
+                        self.local_item_name(laddr),
+                        value.dbg_display()
                     );
                     *self.local_mut(laddr) = value;
                 }
@@ -427,22 +454,26 @@ impl<'a> Vm<'a> {
                     self.frame_ptr = self.stack_ptr;
                     self.stack_ptr += nlocals as usize;
                     self.inst_ptr = fn_ip as usize;
-                    trace!(
-                        "Call function at {} with {} locals, return IP {}, new frame ptr {}",
-                        fn_ip, nlocals, return_ip, self.frame_ptr
-                    );
+
+                    if cfg!(debug_assertions) {
+                        let (fn_name, param_names, local_names) =
+                            self.functions.get(&fn_ip).unwrap();
+                        self.current_fns.push(fn_ip);
+                        trace!(
+                            "Call function '{}' at {}, params: [{}], locals: [{}], return ip {}, new frame ptr {}",
+                            fn_name,
+                            fn_ip,
+                            param_names.join(", "),
+                            local_names.join(", "),
+                            return_ip,
+                            self.frame_ptr
+                        );
+                    }
                 }
                 Inst::Return(nargs) => {
                     let ret_value = self.pop();
                     self.stack_ptr = self.frame_ptr - nargs as usize - 2;
                     debug_assert!(self.stack_ptr < self.stack.len());
-                    trace!(
-                        "Return from function to IP {}, restoring frame ptr {}. Popped {} args, return value {}",
-                        self.stack[self.frame_ptr - 1].dbg_display(),
-                        self.stack[self.frame_ptr].dbg_display(),
-                        nargs,
-                        ret_value.dbg_display()
-                    );
                     // SAFETY: My things are correct.
                     let old_frame_ptr = unsafe { self.stack.get_unchecked(self.frame_ptr) };
                     let frame_ptr = match old_frame_ptr.as_int() {
@@ -464,6 +495,17 @@ impl<'a> Vm<'a> {
                     self.frame_ptr = frame_ptr;
                     self.push(ret_value);
                     self.inst_ptr = return_ip;
+
+                    if cfg!(debug_assertions) {
+                        let fn_ip = self.current_fns.pop().unwrap();
+                        let (fn_name, _, _) = self.functions.get(&fn_ip).unwrap();
+                        trace!(
+                            "Return to IP {}, restored frame ptr {} from function '{}' at {}",
+                            return_ip, frame_ptr, fn_name, fn_ip
+                        );
+                    }
+
+                    debug_assert!(self.frame_ptr <= self.stack_ptr);
                 }
                 Inst::Jump(target) => {
                     trace!("Jump from {} to {}", self.inst_ptr, target);
@@ -535,6 +577,35 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn local_item_name(&self, addr: LocalAddr) -> String {
+        if let Some((_, arg_names, local_names)) =
+            self.current_fns.last().map(|ip| &self.functions[ip])
+        {
+            let addr = addr.0;
+            if addr == 0 {
+                "OLD_FP".to_string()
+            } else if addr == -1 {
+                "RET_ADDR".to_string()
+            } else if addr < -1 {
+                let arg_idx = arg_names.len() as i32 + addr + 1;
+                if arg_idx < 0 {
+                    return format!("{}", addr);
+                }
+                arg_names[arg_idx as usize].to_string()
+            } else if addr >= 1 {
+                let local_idx = addr as usize - 1;
+                if local_idx >= local_names.len() {
+                    return format!("{}", addr);
+                }
+                local_names[local_idx].clone()
+            } else {
+                format!("{}", addr)
+            }
+        } else {
+            format!("{}", addr)
+        }
+    }
+
     fn step(&mut self, inst_ptr: usize) {
         if let Some(stop_line) = self.stop_at_line {
             let token = &self.tokens[self.ip_to_token[self.inst_ptr]];
@@ -557,15 +628,24 @@ impl<'a> Vm<'a> {
             colored::Color::BrightYellow,
         );
 
+        // Get argument and local names for the current function frame
+
+        let value_dbg_display = |v: &Value| {
+            v.dbg_display()
+                .chars()
+                .take(20)
+                .map(|c| if c == '\n' { '⏎' } else { c })
+                .collect::<String>()
+        };
+
         info!(
             "Stack: {}",
             (1..=self.stack_ptr)
-                .map(|i| self.stack[i]
-                    .dbg_display()
-                    .chars()
-                    .take(20)
-                    .map(|c| if c == '\n' { '⏎' } else { c })
-                    .collect::<String>())
+                .map(|i| format!(
+                    "{}={}",
+                    self.local_item_name(self.pos_to_local(i)),
+                    value_dbg_display(&self.stack[i])
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -579,14 +659,9 @@ impl<'a> Vm<'a> {
             "Globals: {}",
             (0..self.globals.len())
                 .map(|i| format!(
-                    "{}: {}",
-                    i,
-                    self.globals[i]
-                        .dbg_display()
-                        .chars()
-                        .take(20)
-                        .map(|c| if c == '\n' { '⏎' } else { c })
-                        .collect::<String>()
+                    "{}={}",
+                    self.global_names[i],
+                    value_dbg_display(&self.globals[i])
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -602,23 +677,15 @@ impl<'a> Vm<'a> {
         if let Ok(line_num) = input.parse::<usize>() {
             let res = self
                 .tokens
-                .binary_search_by_key(&line_num.saturating_sub(1), |t| t.line);
+                .iter()
+                .find(|t| t.kind != TokenKind::Comment && t.line >= line_num - 1);
 
-            let mut idx = match res {
-                Ok(idx) => idx,
-                Err(idx) => idx,
+            let token = match res {
+                Some(t) => t,
+                None => self.tokens.last().unwrap(),
             };
 
-            // Ignore comment tokens
-            while !self.ip_to_token.contains(&idx) {
-                idx += 1;
-                if idx >= self.tokens.len() {
-                    idx = self.tokens.len() - 1;
-                    break;
-                }
-            }
-
-            self.stop_at_line = Some(self.tokens[idx].line);
+            self.stop_at_line = Some(token.line);
         }
     }
 }
