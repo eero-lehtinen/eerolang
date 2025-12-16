@@ -37,10 +37,10 @@ fn main() {
     }
     log.init();
 
-    let source_code = match std::fs::read_to_string(cli.source_file) {
+    let source_code = match std::fs::read_to_string(&cli.source_file) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("Error reading source file: {}", e);
+            eprintln!("Error reading source file '{}': {}", cli.source_file, e);
             std::process::exit(1);
         }
     };
