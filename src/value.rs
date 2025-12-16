@@ -211,6 +211,7 @@ impl Value {
     fn eq_impl(&self, other: &Self) -> Option<bool> {
         let res = match (self.as_value_ref(), other.as_value_ref()) {
             (ValueRef::Null, ValueRef::Null) => true,
+            (ValueRef::Null, _) | (_, ValueRef::Null) => false,
             (ValueRef::Smi(a), ValueRef::Smi(b)) => a == b,
             (ValueRef::Smi(a), ValueRef::Float(b)) => a as f64 == b,
             (ValueRef::Float(a), ValueRef::Smi(b)) => a == b as f64,
