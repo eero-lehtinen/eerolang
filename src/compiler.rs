@@ -262,7 +262,18 @@ impl<'a> Compilation<'a> {
             .expect("Function data should exist in function scope")
             .local_names
             .clone();
+        let locals_count = local_names.len() as u32;
         self.functions.get_mut(name).unwrap().2 = local_names;
+
+        // Recursive calls may not have the correct number of locals yet, so update them.
+        let end_ip = self.cur_inst_ptr();
+        for inst in &mut self.instructions[fn_start_ip as usize..end_ip as usize] {
+            if let Inst::Call(fstart, nlocals) = inst
+                && *fstart == fn_start_ip
+            {
+                *nlocals = locals_count;
+            }
+        }
 
         self.block_end();
 

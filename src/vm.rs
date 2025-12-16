@@ -591,7 +591,7 @@ impl<'a> Vm<'a> {
                 if arg_idx < 0 {
                     return format!("{}", addr);
                 }
-                arg_names[arg_idx as usize].to_string()
+                format!("ARG{}:{}", arg_idx, arg_names[arg_idx as usize])
             } else if addr >= 1 {
                 let local_idx = addr as usize - 1;
                 if local_idx >= local_names.len() {

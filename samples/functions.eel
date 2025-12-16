@@ -1,7 +1,10 @@
-fn func(x, y) {
-    z := x + y + 1
-    return z
+fn func(x) {
+    if x > 2 {
+        return 100
+    }
+    z := x + 1
+    return func(z)
 }
 
-f := func(5, 10)
+f := func(1)
 print(f)
