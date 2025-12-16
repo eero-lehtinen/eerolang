@@ -361,11 +361,11 @@ impl<'a> Vm<'a> {
                                 Some(Value::int(index))
                             }
                         }
-                        ValueRef::Range(start, end) => {
-                            if index < 0 || index >= (end - start) {
+                        ValueRef::Range(r) => {
+                            if index >= (r.end - r.start).abs() {
                                 None
                             } else {
-                                Some(Value::int(start + index))
+                                Some(Value::int(r.start + index * (r.end - r.start).signum()))
                             }
                         }
                         ValueRef::Map(map_rc) => {

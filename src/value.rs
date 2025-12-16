@@ -21,7 +21,7 @@ pub enum ValueRef<'a> {
     Null,
     Smi(i32),
     Float(f64),
-    Range(i64, i64),
+    Range(&'a Range),
     String(&'a str),
     List(&'a RefCell<Vec<Value>>),
     Map(&'a RefCell<Map>),
@@ -29,10 +29,16 @@ pub enum ValueRef<'a> {
 
 pub enum ValueInner {
     Float(f64),
-    Range(i64, i64),
+    Range(Range),
     String(String),
     List(RefCell<Vec<Value>>),
     Map(RefCell<Map>),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Range {
+    pub start: i64,
+    pub end: i64,
 }
 
 pub struct Map {
@@ -105,7 +111,7 @@ impl Value {
     }
 
     pub fn range(start: i64, end: i64) -> Self {
-        Self::rc(Rc::new(ValueInner::Range(start, end)))
+        Self::rc(Rc::new(ValueInner::Range(Range { start, end })))
     }
 
     pub fn string(val: String) -> Self {
@@ -170,7 +176,7 @@ impl Value {
             unsafe {
                 match &*ptr {
                     ValueInner::Float(f) => ValueRef::Float(*f),
-                    ValueInner::Range(s, e) => ValueRef::Range(*s, *e),
+                    ValueInner::Range(r) => ValueRef::Range(r),
                     ValueInner::String(s) => ValueRef::String(s),
                     ValueInner::List(lst) => ValueRef::List(lst),
                     ValueInner::Map(map) => ValueRef::Map(map),
@@ -209,7 +215,7 @@ impl Value {
             (ValueRef::Smi(a), ValueRef::Float(b)) => a as f64 == b,
             (ValueRef::Float(a), ValueRef::Smi(b)) => a == b as f64,
             (ValueRef::Float(a), ValueRef::Float(b)) => a == b,
-            (ValueRef::Range(s1, e1), ValueRef::Range(s2, e2)) => s1 == s2 && e1 == e2,
+            (ValueRef::Range(a), ValueRef::Range(b)) => a == b,
             (ValueRef::String(a), ValueRef::String(b)) => a == b,
             _ => return None,
         };
@@ -249,7 +255,7 @@ impl Value {
             ValueRef::Null => true,
             ValueRef::Smi(i) => i == 0,
             ValueRef::Float(f) => f == 0.0,
-            ValueRef::Range(_, _) => false,
+            ValueRef::Range(_) => false,
             ValueRef::String(s) => s.is_empty(),
             ValueRef::List(lst) => lst.borrow().is_empty(),
             ValueRef::Map(map) => map.borrow().inner.is_empty(),
@@ -389,7 +395,7 @@ impl std::fmt::Debug for Value {
             ValueRef::Null => write!(f, "NULL"),
             ValueRef::Smi(i) => write!(f, "{}", i),
             ValueRef::Float(fl) => write!(f, "{:.2}", fl),
-            ValueRef::Range(start, end) => write!(f, "R{}-{}", start, end),
+            ValueRef::Range(r) => write!(f, "R{}-{}", r.start, r.end),
             ValueRef::String(s) => write!(f, "\"{}\"", s),
             ValueRef::List(lst) => {
                 write!(f, "[")?;
@@ -433,7 +439,7 @@ impl std::fmt::Display for Value {
         match self.as_value_ref() {
             ValueRef::Null => write!(f, "null"),
             ValueRef::Float(fl) => write!(f, "float {}", fl),
-            ValueRef::Range(start, end) => write!(f, "range {}-{}", start, end),
+            ValueRef::Range(r) => write!(f, "range {}-{}", r.start, r.end),
             ValueRef::String(s) => write!(f, "str \"{}\"", s),
             ValueRef::List(lst) => {
                 write!(f, "list[")?;
@@ -475,7 +481,7 @@ pub fn type_display(values: &[Value]) -> String {
         ValueRef::Null => "null",
         ValueRef::Smi(_) => "int",
         ValueRef::Float(_) => "float",
-        ValueRef::Range(_, _) => "range",
+        ValueRef::Range(_) => "range",
         ValueRef::String(_) => "str",
         ValueRef::List(_) => "list",
         ValueRef::Map(_) => "map",

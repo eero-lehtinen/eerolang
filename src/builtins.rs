@@ -100,8 +100,8 @@ fn print_inner(item: &Value, depth: u32, w: &mut Stdout) {
         ValueRef::Float(f) => {
             write!(w, "{}", f).unwrap();
         }
-        ValueRef::Range(r_start, r_end) => {
-            write!(w, "{}-{}", r_start, r_end).unwrap();
+        ValueRef::Range(r) => {
+            write!(w, "{}-{}", r.start, r.end).unwrap();
         }
         ValueRef::String(s) => {
             write!(w, "{}", s).unwrap();
@@ -272,7 +272,7 @@ fn write_str(w: &mut impl Write, value: &Value) {
                 write_str(w, value);
             }
         }
-        ValueRef::Range(s, e) => write!(w, "{}-{}", s, e).unwrap(),
+        ValueRef::Range(r) => write!(w, "{}-{}", r.start, r.end).unwrap(),
     }
 }
 
@@ -400,15 +400,15 @@ pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     };
 
     match target.as_value_ref() {
-        ValueRef::Range(start, end) => {
+        ValueRef::Range(r) => {
             let Some(index) = index_or_key.as_int() else {
                 arg_bail!("list/string/range, int", args);
             };
-
-            if index >= end - start {
-                out_of_bounds_bail!(end - start, index);
+            let dist = (r.end - r.start).abs();
+            if index >= dist {
+                out_of_bounds_bail!(dist, index);
             }
-            Ok(Value::int(start + index))
+            Ok(Value::int(index))
         }
         ValueRef::String(s) => {
             let Some(index) = index_or_key.as_int() else {
