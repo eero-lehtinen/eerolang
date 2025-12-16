@@ -188,6 +188,21 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     Ok(Value::string(content))
 }
 
+const TRIM_ARGS: u32 = 1;
+pub fn builtin_trim(args: &[Value]) -> ProgramFnRes {
+    let [s] = &args else {
+        arg_bail!("string", args);
+    };
+
+    let ValueRef::String(s) = s.as_value_ref() else {
+        arg_bail!("string", args);
+    };
+
+    let trimmed = s.trim();
+
+    Ok(Value::string(trimmed.to_owned()))
+}
+
 const SPLIT_ARGS: u32 = 2;
 pub fn builtin_split(args: &[Value]) -> ProgramFnRes {
     let [s, delim] = &args else {
@@ -705,6 +720,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
             builtin_readfile,
             ArgsRequred::Exact(READFILE_ARGS),
         ),
+        ("trim", builtin_trim, ArgsRequred::Exact(TRIM_ARGS)),
         ("split", builtin_split, ArgsRequred::Exact(SPLIT_ARGS)),
         ("int", builtin_int, ArgsRequred::Exact(INT_ARGS)),
         ("float", builtin_float, ArgsRequred::Exact(FLOAT_ARGS)),
