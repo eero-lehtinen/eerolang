@@ -185,7 +185,7 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     let content = std::fs::read_to_string(filename)
         .map_err(|_| format!("Failed to read file: {}", filename))?;
 
-    Ok(Value::string(content.trim().into()))
+    Ok(Value::string(content))
 }
 
 const SPLIT_ARGS: u32 = 2;
