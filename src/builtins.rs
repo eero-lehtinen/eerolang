@@ -616,6 +616,48 @@ pub fn builtin_sqrt(args: &[Value]) -> ProgramFnRes {
     }
 }
 
+pub fn builtin_min(args: &[Value]) -> ProgramFnRes {
+    if args.len() < 2 {
+        arg_bail!("at least 2 int/float", args);
+    }
+
+    let Some(mut min) = args[0].as_number() else {
+        arg_bail!("at least 2 int/float", args);
+    };
+
+    for arg in &args[1..] {
+        let Some(num) = arg.as_number() else {
+            arg_bail!("at least 2 int/float", args);
+        };
+        if num < min {
+            min = num;
+        }
+    }
+
+    Ok(Value::number(min))
+}
+
+pub fn builtin_max(args: &[Value]) -> ProgramFnRes {
+    if args.len() < 2 {
+        arg_bail!("at least 2 int/float", args);
+    }
+
+    let Some(mut max) = args[0].as_number() else {
+        arg_bail!("at least 2 int/float", args);
+    };
+
+    for arg in &args[1..] {
+        let Some(num) = arg.as_number() else {
+            arg_bail!("at least 2 int/float", args);
+        };
+        if num > max {
+            max = num;
+        }
+    }
+
+    Ok(Value::number(max))
+}
+
 pub type ProgramFnRes = Result<Value, String>;
 pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 
@@ -623,6 +665,7 @@ pub type ProgramFn = fn(&[Value]) -> ProgramFnRes;
 pub enum ArgsRequred {
     Exact(u32),
     Range(u32, u32),
+    AtLeast(u32),
     Any,
 }
 
@@ -634,6 +677,7 @@ impl ArgsRequred {
                 let arg_count = arg_count as u32;
                 arg_count >= *min && arg_count <= *max
             }
+            ArgsRequred::AtLeast(n) => arg_count as u32 >= *n,
             ArgsRequred::Any => true,
         }
     }
@@ -642,6 +686,7 @@ impl ArgsRequred {
         match self {
             ArgsRequred::Exact(n) => format!("{}", n),
             ArgsRequred::Range(min, max) => format!("{} to {}", min, max),
+            ArgsRequred::AtLeast(n) => format!("at least {}", n),
             ArgsRequred::Any => "any number of".to_string(),
         }
     }
@@ -676,5 +721,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
         ("pow", builtin_pow, ArgsRequred::Exact(POW_ARGS)),
         ("sqrt", builtin_sqrt, ArgsRequred::Exact(SQRT_ARGS)),
+        ("min", builtin_min, ArgsRequred::AtLeast(2)),
+        ("max", builtin_max, ArgsRequred::AtLeast(2)),
     ]
 }
