@@ -197,11 +197,9 @@ impl<'a> Vm<'a> {
     }
 
     fn pop(&mut self) -> Value {
-        let pos = self.stack_ptr;
+        let val = std::mem::take(self.stack_mut(0));
         self.stack_ptr -= 1;
-        debug_assert!(pos < self.stack.len());
-        // SAFETY: My things are correct.
-        unsafe { self.stack.get_unchecked(pos).clone() }
+        val
     }
 
     fn push(&mut self, value: Value) {
