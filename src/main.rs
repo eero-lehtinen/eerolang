@@ -13,6 +13,7 @@ mod vm;
 // Store these for convenient error reporting purposes.
 static SOURCE: OnceLock<String> = OnceLock::new();
 static TOKENS: OnceLock<Vec<Token>> = OnceLock::new();
+static EXTRA_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
 #[derive(Parser)]
 struct Cli {
@@ -25,6 +26,9 @@ struct Cli {
     /// Print tokens with colors
     #[clap(long)]
     tokens: bool,
+
+    #[arg(last = true)]
+    extra_args: Vec<String>,
 }
 
 fn main() {
@@ -36,6 +40,8 @@ fn main() {
         log.filter_level(log::LevelFilter::Trace);
     }
     log.init();
+
+    EXTRA_ARGS.set(cli.extra_args.to_vec()).unwrap();
 
     let source_code = match std::fs::read_to_string(&cli.source_file) {
         Ok(code) => code,

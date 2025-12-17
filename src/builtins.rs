@@ -2,7 +2,10 @@ use std::io::{Stdout, Write};
 
 use foldhash::HashMap;
 
-use crate::value::{Value, ValueRef, type_display};
+use crate::{
+    EXTRA_ARGS,
+    value::{Value, ValueRef, type_display},
+};
 
 macro_rules! arg_bail {
     ($expected:expr, $args:expr) => {{
@@ -78,6 +81,18 @@ pub fn builtin_range(args: &[Value]) -> ProgramFnRes {
     };
 
     Ok(Value::range(start, end))
+}
+
+const ARGS_ARGS: u32 = 0;
+pub fn builtin_args(_: &[Value]) -> ProgramFnRes {
+    Ok(Value::list(
+        EXTRA_ARGS
+            .get()
+            .unwrap()
+            .iter()
+            .map(|s| Value::string(s.clone()))
+            .collect(),
+    ))
 }
 
 const NOT_ARGS: u32 = 1;
@@ -716,6 +731,7 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("list", builtin_list, ArgsRequred::Any),
         ("map", builtin_map, ArgsRequred::Any),
         ("range", builtin_range, ArgsRequred::Range(1, 2)),
+        ("args", builtin_args, ArgsRequred::Exact(ARGS_ARGS)),
         ("not", builtin_not, ArgsRequred::Exact(NOT_ARGS)),
         ("print", builtin_print, ArgsRequred::Any),
         ("sleep", builtin_sleep, ArgsRequred::Exact(SLEEP_ARGS)),

@@ -157,6 +157,10 @@ x = pow(2, 3)
 x = sqrt(2)
 x = min(1, 2)
 x = max(1, 2)
+
+# Script arguments following `--` in the command line
+args := args()
+print("Script arguments:", args)
 ```
 
 ## Performance notes
