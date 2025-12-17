@@ -1,5 +1,5 @@
 use foldhash::{HashMap, HashMapExt};
-use log::trace;
+use log::{debug, trace};
 
 use crate::{
     ast_parser::{AstNode, AstNodeKind, fatal_generic},
@@ -600,8 +600,9 @@ impl<'a> Compilation<'a> {
 pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
     let mut c = Compilation::new(tokens);
     c.compile_block_full(block);
+    debug!("Compilation finished. Generated instructions:");
     for (i, ins) in c.instructions.iter().enumerate() {
-        trace!("{:4}: {}", i, ins);
+        debug!("{:4}: {}", i, ins);
     }
     c
 }
