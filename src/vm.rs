@@ -31,6 +31,7 @@ pub struct Vm<'a> {
     /// Maps ip to (function name, parameter names, local variable names)
     functions: HashMap<u32, (String, Vec<&'a str>, Vec<String>)>,
     current_fns: Vec<u32>,
+    call_frames: Vec<(u32, u32)>,
     stop_at_line: Option<usize>,
     stepping: bool,
 }
@@ -72,6 +73,7 @@ impl<'a> Vm<'a> {
             builtins,
             functions,
             current_fns: Vec::new(),
+            call_frames: Vec::new(),
             stop_at_line: None,
             stepping: false,
         }
@@ -447,8 +449,8 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Call(fn_ip, nlocals) => {
                     let return_ip = self.inst_ptr + 1;
-                    self.push(Value::int(return_ip as i64));
-                    self.push(Value::int(self.frame_ptr as i64));
+                    self.call_frames
+                        .push((self.frame_ptr as u32, return_ip as u32));
                     self.frame_ptr = self.stack_ptr;
                     self.stack_ptr += nlocals as usize;
                     self.inst_ptr = fn_ip as usize;
@@ -470,29 +472,15 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Return(nargs) => {
                     let ret_value = self.pop();
-                    self.stack_ptr = self.frame_ptr - nargs as usize - 2;
+                    self.stack_ptr = self.frame_ptr - nargs as usize;
                     debug_assert!(self.stack_ptr < self.stack.len());
-                    // SAFETY: My things are correct.
-                    let old_frame_ptr = unsafe { self.stack.get_unchecked(self.frame_ptr) };
-                    let frame_ptr = match old_frame_ptr.as_int() {
-                        Some(fp) => fp as usize,
-                        None => self.fatal(&format!(
-                            "Corrupted frame pointer on return: {:?}",
-                            old_frame_ptr.dbg_display()
-                        )),
+                    let (frame_ptr, return_ip) = match self.call_frames.pop() {
+                        Some(v) => v,
+                        None => self.fatal("Stack frame underflow on return"),
                     };
-                    // SAFETY: My things are correct.
-                    let return_ip_value = unsafe { self.stack.get_unchecked(self.frame_ptr - 1) };
-                    let return_ip = match return_ip_value.as_int() {
-                        Some(addr) => addr as usize,
-                        None => self.fatal(&format!(
-                            "Corrupted return address on return: {:?}",
-                            return_ip_value.dbg_display()
-                        )),
-                    };
-                    self.frame_ptr = frame_ptr;
+                    self.frame_ptr = frame_ptr as usize;
+                    self.inst_ptr = return_ip as usize;
                     self.push(ret_value);
-                    self.inst_ptr = return_ip;
 
                     if cfg!(debug_assertions) {
                         let fn_ip = self.current_fns.pop().unwrap();
@@ -580,17 +568,13 @@ impl<'a> Vm<'a> {
             self.current_fns.last().map(|ip| &self.functions[ip])
         {
             let addr = addr.0;
-            if addr == 0 {
-                "OLD_FP".to_string()
-            } else if addr == -1 {
-                "RET_ADDR".to_string()
-            } else if addr < -1 {
-                let arg_idx = arg_names.len() as i32 + addr + 1;
+            if addr <= 0 {
+                let arg_idx = arg_names.len() as i32 - 1 + addr;
                 if arg_idx < 0 {
                     return format!("{}", addr);
                 }
                 format!("ARG{}:{}", arg_idx, arg_names[arg_idx as usize])
-            } else if addr >= 1 {
+            } else if addr > 0 {
                 let local_idx = addr as usize - 1;
                 if local_idx >= local_names.len() {
                     return format!("{}", addr);

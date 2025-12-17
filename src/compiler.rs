@@ -89,7 +89,7 @@ impl<'a> Compilation<'a> {
         if decls.iter().any(|(n, _)| *n == name) {
             self.fatal(&format!("Duplicate argument '{}'", name), node);
         }
-        let addr = Addr::Local(LocalAddr(-(total as i32) - 1 + decls.len() as i32));
+        let addr = Addr::Local(LocalAddr(-(total as i32) + 1 + decls.len() as i32));
         decls.push((name, addr));
         addr
     }
