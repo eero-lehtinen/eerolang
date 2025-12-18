@@ -1,4 +1,7 @@
-use std::io::{Stdout, Write};
+use std::{
+    collections::VecDeque,
+    io::{Stdout, Write},
+};
 
 use foldhash::HashMap;
 
@@ -35,6 +38,11 @@ macro_rules! fn_ok {
 pub fn builtin_list(args: &[Value]) -> ProgramFnRes {
     let list = args.to_vec();
     Ok(Value::list(list))
+}
+
+pub fn builtin_queue(args: &[Value]) -> ProgramFnRes {
+    let queue = VecDeque::from(args.to_vec());
+    Ok(Value::queue(queue))
 }
 
 pub fn builtin_map(args: &[Value]) -> ProgramFnRes {
@@ -134,6 +142,20 @@ fn print_inner(item: &Value, depth: u32, w: &mut Stdout) {
             for (j, item) in l.borrow().iter().enumerate() {
                 print_inner(item, depth + 1, w);
                 if j < l.borrow().len() - 1 {
+                    write!(w, ", ").unwrap();
+                }
+            }
+            write!(w, "]").unwrap();
+        }
+        ValueRef::Queue(q) => {
+            if depth > 2 {
+                write!(w, "queue[...]").unwrap();
+                return;
+            }
+            write!(w, "queue[").unwrap();
+            for (j, item) in q.borrow().iter().enumerate() {
+                print_inner(item, depth + 1, w);
+                if j < q.borrow().len() - 1 {
                     write!(w, ", ").unwrap();
                 }
             }
@@ -293,6 +315,15 @@ fn write_str(w: &mut impl Write, value: &Value) {
                 write_str(w, v);
             }
         }
+        ValueRef::Queue(q) => {
+            let q_ref = q.borrow();
+            for (i, v) in q_ref.iter().enumerate() {
+                if i > 0 {
+                    write!(w, ",").unwrap();
+                }
+                write_str(w, v);
+            }
+        }
         ValueRef::Map(map) => {
             let map_ref = map.borrow();
             let mut first = true;
@@ -372,6 +403,10 @@ pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
             l.borrow_mut().push(value.clone());
             fn_ok!()
         }
+        ValueRef::Queue(q) => {
+            q.borrow_mut().push_back(value.clone());
+            fn_ok!()
+        }
         _ => arg_bail!("list, value", args),
     }
 }
@@ -379,7 +414,7 @@ pub fn builtin_push(args: &[Value]) -> ProgramFnRes {
 const POP_ARGS: u32 = 1;
 pub fn builtin_pop(args: &[Value]) -> ProgramFnRes {
     let [target] = args else {
-        arg_bail!("list", args);
+        arg_bail!("list/queue", args);
     };
 
     match target.as_value_ref() {
@@ -391,7 +426,42 @@ pub fn builtin_pop(args: &[Value]) -> ProgramFnRes {
             let value = lb.pop().unwrap();
             Ok(value)
         }
-        _ => arg_bail!("list", args),
+        ValueRef::Queue(q) => {
+            let mut qb = q.borrow_mut();
+            if qb.is_empty() {
+                return Err("Cannot pop from an empty queue".to_string());
+            }
+            let value = qb.pop_back().unwrap();
+            Ok(value)
+        }
+        _ => arg_bail!("list/queue", args),
+    }
+}
+
+const POP_FRONT_ARGS: u32 = 1;
+pub fn builtin_pop_front(args: &[Value]) -> ProgramFnRes {
+    let [target] = args else {
+        arg_bail!("list/queue", args);
+    };
+
+    match target.as_value_ref() {
+        ValueRef::List(l) => {
+            let mut lb = l.borrow_mut();
+            if lb.is_empty() {
+                return Err("Cannot pop from an empty list".to_string());
+            }
+            let value = lb.remove(0);
+            Ok(value)
+        }
+        ValueRef::Queue(q) => {
+            let mut qb = q.borrow_mut();
+            if qb.is_empty() {
+                return Err("Cannot pop from an empty queue".to_string());
+            }
+            let value = qb.pop_front().unwrap();
+            Ok(value)
+        }
+        _ => arg_bail!("list/queue", args),
     }
 }
 
@@ -407,10 +477,23 @@ pub fn builtin_set(args: &[Value]) -> ProgramFnRes {
                 Some(i) => i as usize,
                 None => arg_bail!("list, int, value", args),
             };
-            if index >= l.borrow().len() {
-                out_of_bounds_bail!(l.borrow().len(), index);
+            let mut l = l.borrow_mut();
+            if index >= l.len() {
+                out_of_bounds_bail!(l.len(), index);
             }
-            l.borrow_mut()[index] = value.clone();
+            l[index] = value.clone();
+            fn_ok!()
+        }
+        ValueRef::Queue(q) => {
+            let index = match index_or_key.as_int() {
+                Some(i) => i as usize,
+                None => arg_bail!("queue, int, value", args),
+            };
+            let mut qb = q.borrow_mut();
+            if index >= qb.len() {
+                out_of_bounds_bail!(qb.len(), index);
+            }
+            qb[index] = value.clone();
             fn_ok!()
         }
         ValueRef::Map(m) => {
@@ -430,7 +513,7 @@ const GET_ARGS: u32 = 2;
 #[inline]
 pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
     let [target, index_or_key] = args else {
-        arg_bail!("list/string/range/map, int", args);
+        arg_bail!("list/queue/string/range/map, int", args);
     };
 
     match target.as_value_ref() {
@@ -469,6 +552,20 @@ pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
                 out_of_bounds_bail!(l.len(), index);
             }
             Ok(l[index].clone())
+        }
+        ValueRef::Queue(q) => {
+            let Some(index) = index_or_key.as_int() else {
+                arg_bail!("list/string/range, int", args);
+            };
+
+            let index = index as usize;
+
+            let q = q.borrow();
+
+            if index >= q.len() {
+                out_of_bounds_bail!(q.len(), index);
+            }
+            Ok(q[index].clone())
         }
         ValueRef::Map(m) => {
             if !index_or_key.is_string() {
@@ -509,7 +606,7 @@ pub fn builtin_has(args: &[Value]) -> ProgramFnRes {
 const REMOVE_ARGS: u32 = 2;
 pub fn builtin_remove(args: &[Value]) -> ProgramFnRes {
     let [target, key] = args else {
-        arg_bail!("map/list, string/int", args);
+        arg_bail!("map/list/queue, string/int", args);
     };
 
     match target.as_value_ref() {
@@ -534,6 +631,18 @@ pub fn builtin_remove(args: &[Value]) -> ProgramFnRes {
             l.remove(index);
             fn_ok!()
         }
+        ValueRef::Queue(q) => {
+            let Some(index) = key.as_int() else {
+                arg_bail!("queue, int", args);
+            };
+            let index = index as usize;
+            let mut q = q.borrow_mut();
+            if index >= q.len() {
+                out_of_bounds_bail!(q.len(), index);
+            }
+            q.remove(index);
+            fn_ok!()
+        }
         _ => arg_bail!("map, string", args),
     }
 }
@@ -552,6 +661,10 @@ fn clone_impl(value: &Value) -> Value {
         ValueRef::List(l) => {
             let cloned_list = l.borrow().iter().map(clone_impl).collect();
             Value::list(cloned_list)
+        }
+        ValueRef::Queue(q) => {
+            let cloned_queue = q.borrow().iter().map(clone_impl).collect();
+            Value::queue(cloned_queue)
         }
         ValueRef::Map(m) => {
             let cloned_map = m
@@ -575,6 +688,7 @@ pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     let len = match len.as_value_ref() {
         ValueRef::String(s) => s.len() as i64,
         ValueRef::List(l) => l.borrow().len() as i64,
+        ValueRef::Queue(q) => q.borrow().len() as i64,
         ValueRef::Map(m) => m.borrow().inner.len() as i64,
         _ => arg_bail!("list/string/map", args),
     };
@@ -729,6 +843,7 @@ impl ArgsRequred {
 pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
     vec![
         ("list", builtin_list, ArgsRequred::Any),
+        ("queue", builtin_queue, ArgsRequred::Any),
         ("map", builtin_map, ArgsRequred::Any),
         ("range", builtin_range, ArgsRequred::Range(1, 2)),
         ("args", builtin_args, ArgsRequred::Exact(ARGS_ARGS)),
@@ -748,6 +863,11 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("substr", builtin_substr, ArgsRequred::Range(2, 3)),
         ("push", builtin_push, ArgsRequred::Exact(PUSH_ARGS)),
         ("pop", builtin_pop, ArgsRequred::Exact(POP_ARGS)),
+        (
+            "pop_front",
+            builtin_pop_front,
+            ArgsRequred::Exact(POP_FRONT_ARGS),
+        ),
         ("set", builtin_set, ArgsRequred::Exact(SET_ARGS)),
         ("get", builtin_get, ArgsRequred::Exact(GET_ARGS)),
         ("has", builtin_has, ArgsRequred::Exact(HAS_ARGS)),

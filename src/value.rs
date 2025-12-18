@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
@@ -26,6 +27,7 @@ pub enum ValueRef<'a> {
     Range(&'a Range),
     String(&'a str),
     List(&'a RefCell<Vec<Value>>),
+    Queue(&'a RefCell<VecDeque<Value>>),
     Map(&'a RefCell<Map>),
 }
 
@@ -34,6 +36,7 @@ pub enum ValueInner {
     Range(Range),
     String(String),
     List(RefCell<Vec<Value>>),
+    Queue(RefCell<VecDeque<Value>>),
     Map(RefCell<Map>),
 }
 
@@ -124,6 +127,10 @@ impl Value {
         Self::rc(Rc::new(ValueInner::List(RefCell::new(val))))
     }
 
+    pub fn queue(val: VecDeque<Value>) -> Self {
+        Self::rc(Rc::new(ValueInner::Queue(RefCell::new(val))))
+    }
+
     pub fn bool(val: bool) -> Self {
         Self::smi(if val { 1 } else { 0 })
     }
@@ -181,6 +188,7 @@ impl Value {
                     ValueInner::Range(r) => ValueRef::Range(r),
                     ValueInner::String(s) => ValueRef::String(s),
                     ValueInner::List(lst) => ValueRef::List(lst),
+                    ValueInner::Queue(queue) => ValueRef::Queue(queue),
                     ValueInner::Map(map) => ValueRef::Map(map),
                 }
             }
@@ -261,6 +269,7 @@ impl Value {
             ValueRef::Range(_) => false,
             ValueRef::String(s) => s.is_empty(),
             ValueRef::List(lst) => lst.borrow().is_empty(),
+            ValueRef::Queue(queue) => queue.borrow().is_empty(),
             ValueRef::Map(map) => map.borrow().inner.is_empty(),
         }
     }
@@ -415,6 +424,21 @@ impl std::fmt::Debug for Value {
                 }
                 write!(f, "]")
             }
+            ValueRef::Queue(que) => {
+                write!(f, "Queue[")?;
+                for (i, val) in que.borrow().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
+                }
+                write!(f, "]")
+            }
             ValueRef::Map(map) => {
                 write!(f, "{{")?;
                 for (i, (key, val)) in map.borrow().inner.iter().enumerate() {
@@ -444,6 +468,21 @@ impl std::fmt::Display for Value {
             ValueRef::Float(fl) => write!(f, "float {}", fl),
             ValueRef::Range(r) => write!(f, "range {}-{}", r.start, r.end),
             ValueRef::String(s) => write!(f, "str \"{}\"", s),
+            ValueRef::Queue(que) => {
+                write!(f, "queue[")?;
+                for (i, val) in que.borrow().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", val)?;
+
+                    if i >= 5 {
+                        write!(f, ", ...")?;
+                        break;
+                    }
+                }
+                write!(f, "]")
+            }
             ValueRef::List(lst) => {
                 write!(f, "list[")?;
                 for (i, val) in lst.borrow().iter().enumerate() {
@@ -487,6 +526,7 @@ pub fn type_display(values: &[Value]) -> String {
         ValueRef::Range(_) => "range",
         ValueRef::String(_) => "str",
         ValueRef::List(_) => "list",
+        ValueRef::Queue(_) => "queue",
         ValueRef::Map(_) => "map",
     };
     values.iter().map(tstr).collect::<Vec<&str>>().join(", ")

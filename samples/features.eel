@@ -89,6 +89,12 @@ push(list, "new element")
 # Pops an element from the end of a list and returns it
 elem := pop(list)
 
+# There is also a queue, for an efficient pop_front
+queue := queue()
+push(queue, 1)
+push(queue, 2)
+first := pop_front(queue)
+
 # Sets a value at index or key in a list or map
 set(list, 0, "changed")
 set(map, "one", 11)
