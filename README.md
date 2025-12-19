@@ -2,7 +2,7 @@
 
 Suitable only for non-serious purposes.
 
-Eerolang is dynamically typed programming language implemented in Rust with only a few dependencies (for terminal interaction and logging). It contains a tokenizer, a predictive recursive-descent parser, a one-pass bytecode compiler and a stack based virtual machine.
+Eerolang is dynamically typed programming language implemented in Rust with only a few dependencies (for terminal interaction and logging). It contains a tokenizer, a predictive recursive-descent parser, a one-pass bytecode compiler and a stack based virtual machine (similar to JVM/Python).
 
 ## Installation
 
