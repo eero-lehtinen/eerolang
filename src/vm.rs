@@ -13,7 +13,10 @@ use crate::{
     value::{Map, Value, ValueRef},
 };
 
-const STACK_SIZE: u32 = 2 << 12;
+const STACK_SIZE: u32 = 2 << 15;
+
+/// There is no real technical limitation, this is just to prevent infinite recursion.
+const RECURSION_LIMIT: usize = 2 << 15;
 
 #[allow(dead_code)]
 pub struct Vm<'a> {
@@ -250,6 +253,8 @@ impl<'a> Vm<'a> {
             let inst_ptr = self.inst_ptr;
             let inst = &self.instructions[inst_ptr];
 
+            let mut jump = None;
+
             match *inst {
                 Inst::Nop => {
                     trace!("Nop");
@@ -449,11 +454,14 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Call(fn_ip, nlocals) => {
                     let return_ip = self.inst_ptr + 1;
+                    if self.call_frames.len() >= RECURSION_LIMIT {
+                        self.fatal(&format!("Recursion limit of {} exceeded", RECURSION_LIMIT));
+                    }
                     self.call_frames
                         .push((self.frame_ptr as u32, return_ip as u32));
                     self.frame_ptr = self.stack_ptr;
                     self.stack_ptr += nlocals as usize;
-                    self.inst_ptr = fn_ip as usize;
+                    jump = Some(fn_ip as usize);
 
                     if cfg!(debug_assertions) {
                         let (fn_name, param_names, local_names) =
@@ -479,7 +487,7 @@ impl<'a> Vm<'a> {
                         None => self.fatal("Stack frame underflow on return"),
                     };
                     self.frame_ptr = frame_ptr as usize;
-                    self.inst_ptr = return_ip as usize;
+                    jump = Some(return_ip as usize);
                     self.push(ret_value);
 
                     if cfg!(debug_assertions) {
@@ -495,7 +503,7 @@ impl<'a> Vm<'a> {
                 }
                 Inst::Jump(target) => {
                     trace!("Jump from {} to {}", self.inst_ptr, target);
-                    self.inst_ptr = target as usize;
+                    jump = Some(target as usize);
                 }
                 Inst::JumpIfNull(target) => {
                     let cond_value = self.stack(0);
@@ -506,7 +514,7 @@ impl<'a> Vm<'a> {
                         cond_value.dbg_display()
                     );
                     if cond_value.is_null() {
-                        self.inst_ptr = target as usize;
+                        jump = Some(target as usize);
                     }
                     self.stack_ptr -= 1;
                 }
@@ -519,7 +527,7 @@ impl<'a> Vm<'a> {
                         cond_value.dbg_display()
                     );
                     if cond_value.is_falsy() {
-                        self.inst_ptr = target as usize;
+                        jump = Some(target as usize);
                     }
                     self.stack_ptr -= 1;
                 }
@@ -532,7 +540,7 @@ impl<'a> Vm<'a> {
                         cond_value.dbg_display()
                     );
                     if !cond_value.is_falsy() {
-                        self.inst_ptr = target as usize;
+                        jump = Some(target as usize);
                     }
                     self.stack_ptr -= 1;
                 }
@@ -542,8 +550,9 @@ impl<'a> Vm<'a> {
                 self.step(inst_ptr);
             }
 
-            if self.inst_ptr == inst_ptr {
-                self.inst_ptr += 1;
+            match jump {
+                Some(target) => self.inst_ptr = target,
+                None => self.inst_ptr += 1,
             }
         }
 
