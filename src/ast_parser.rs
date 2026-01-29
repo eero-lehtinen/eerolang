@@ -550,6 +550,17 @@ fn fatal(msg: &str, token: &Token) -> ! {
 }
 
 pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
+    fatal_with_stack(msg, end_msg, token, &[]);
+}
+
+/// Represents a function call location for error reporting.
+pub struct CallLocation<'a> {
+    pub function_name: &'a str,
+    pub line: usize,
+}
+
+/// `call_stack` should be in order from innermost to outermost.
+pub fn fatal_with_stack(msg: &str, end_msg: &str, token: &Token, call_stack: &[CallLocation]) -> ! {
     let char_col = find_source_char_col(token.line, token.byte_col);
 
     eprintln!(
@@ -568,6 +579,31 @@ pub fn fatal_generic(msg: &str, end_msg: &str, token: &Token) -> ! {
         2,
         colored::Color::BrightRed,
     );
+
+    if !call_stack.is_empty() {
+        eprintln!();
+        eprintln!("Call stack:");
+
+        const MAX_TOP: usize = 10;
+        const MAX_BOTTOM: usize = 5;
+
+        let total = call_stack.len();
+        let show_all = total <= MAX_TOP + MAX_BOTTOM;
+
+        for (i, loc) in call_stack.iter().enumerate() {
+            if show_all || i < MAX_TOP || i >= total - MAX_BOTTOM {
+                eprintln!(
+                    "  {}: {} at line {}",
+                    i,
+                    loc.function_name.color(TokenKind::Ident("".into()).color()),
+                    loc.line + 1,
+                );
+            } else if i == MAX_TOP {
+                eprintln!("  ... {} more ...", total - MAX_TOP - MAX_BOTTOM);
+            }
+        }
+    }
+
     eprintln!("{}", end_msg);
     std::process::exit(1);
 }

@@ -5,7 +5,7 @@ use log::{info, trace};
 
 use crate::{
     TOKENS,
-    ast_parser::fatal_generic,
+    ast_parser::{CallLocation, fatal_with_stack},
     builtins::{ProgramFn, builtin_get},
     compiler::{Compilation, binary_op_err},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
@@ -33,8 +33,8 @@ pub struct Vm<'a> {
     builtins: Vec<(ProgramFn, String)>,
     /// Maps ip to (function name, parameter names, local variable names)
     functions: HashMap<u32, (String, Vec<&'a str>, Vec<String>)>,
-    current_fns: Vec<u32>,
-    call_frames: Vec<(u32, u32)>,
+    /// (frame_ptr, return_ip, function_ip)
+    call_frames: Vec<(u32, u32, u32)>,
     stop_at_line: Option<usize>,
     stepping: bool,
 }
@@ -75,7 +75,6 @@ impl<'a> Vm<'a> {
             constants: ctx.constants.clone(),
             builtins,
             functions,
-            current_fns: Vec::new(),
             call_frames: Vec::new(),
             stop_at_line: None,
             stepping: false,
@@ -94,7 +93,23 @@ impl<'a> Vm<'a> {
         let instruction = self.instructions.get(self.inst_ptr);
 
         let token = &self.tokens[token_idx];
-        fatal_generic(
+
+        let call_stack: Vec<CallLocation> = self
+            .call_frames
+            .iter()
+            .rev()
+            .filter_map(|&(_, _, fn_ip)| {
+                self.functions.get(&fn_ip).map(|(fn_name, _, _)| {
+                    let fn_token_idx = self.ip_to_token.get(fn_ip as usize).copied().unwrap_or(0);
+                    CallLocation {
+                        function_name: fn_name.as_str(),
+                        line: self.tokens[fn_token_idx].line,
+                    }
+                })
+            })
+            .collect();
+
+        fatal_with_stack(
             msg,
             &format!(
                 "Fatal error during VM execution {}",
@@ -105,6 +120,7 @@ impl<'a> Vm<'a> {
                 }
             ),
             token,
+            &call_stack,
         )
     }
 
@@ -458,7 +474,7 @@ impl<'a> Vm<'a> {
                         self.fatal(&format!("Recursion limit of {} exceeded", RECURSION_LIMIT));
                     }
                     self.call_frames
-                        .push((self.frame_ptr as u32, return_ip as u32));
+                        .push((self.frame_ptr as u32, return_ip as u32, fn_ip));
                     self.frame_ptr = self.stack_ptr;
                     self.stack_ptr += nlocals as usize;
                     jump = Some(fn_ip as usize);
@@ -466,7 +482,6 @@ impl<'a> Vm<'a> {
                     if cfg!(debug_assertions) {
                         let (fn_name, param_names, local_names) =
                             self.functions.get(&fn_ip).unwrap();
-                        self.current_fns.push(fn_ip);
                         trace!(
                             "Call function '{}' at {}, params: [{}], locals: [{}], return ip {}, new frame ptr {}",
                             fn_name,
@@ -482,7 +497,7 @@ impl<'a> Vm<'a> {
                     let ret_value = self.pop();
                     self.stack_ptr = self.frame_ptr - nargs as usize;
                     debug_assert!(self.stack_ptr < self.stack.len());
-                    let (frame_ptr, return_ip) = match self.call_frames.pop() {
+                    let (frame_ptr, return_ip, fn_ip) = match self.call_frames.pop() {
                         Some(v) => v,
                         None => self.fatal("Stack frame underflow on return"),
                     };
@@ -491,7 +506,6 @@ impl<'a> Vm<'a> {
                     self.push(ret_value);
 
                     if cfg!(debug_assertions) {
-                        let fn_ip = self.current_fns.pop().unwrap();
                         let (fn_name, _, _) = self.functions.get(&fn_ip).unwrap();
                         trace!(
                             "Return to IP {}, restored frame ptr {} from function '{}' at {}",
@@ -573,8 +587,10 @@ impl<'a> Vm<'a> {
     }
 
     fn local_item_name(&self, addr: LocalAddr) -> String {
-        if let Some((_, arg_names, local_names)) =
-            self.current_fns.last().map(|ip| &self.functions[ip])
+        if let Some((_, arg_names, local_names)) = self
+            .call_frames
+            .last()
+            .and_then(|&(_, _, fn_ip)| self.functions.get(&fn_ip))
         {
             let addr = addr.0;
             if addr <= 0 {
