@@ -16,6 +16,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Literal(Literal),
     Ident(String),
@@ -48,6 +50,8 @@ impl TokenKind {
             | TokenKind::RParen
             | TokenKind::LBrace
             | TokenKind::RBrace
+            | TokenKind::LBracket
+            | TokenKind::RBracket
             | TokenKind::Comma => colored::Color::White,
             TokenKind::Literal(Literal::String(_)) => colored::Color::Green,
             TokenKind::Literal(Literal::Number(_) | Literal::Null) => colored::Color::BrightCyan,
@@ -76,6 +80,8 @@ impl Display for TokenKind {
             TokenKind::RParen => write!(f, ")"),
             TokenKind::LBrace => write!(f, "{{"),
             TokenKind::RBrace => write!(f, "}}"),
+            TokenKind::LBracket => write!(f, "["),
+            TokenKind::RBracket => write!(f, "]"),
             TokenKind::Comma => write!(f, ","),
             TokenKind::Literal(val) => write!(f, "{:?}", val),
             TokenKind::Ident(name) => write!(f, "ident({})", name),
@@ -254,6 +260,8 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             ')' => tok!(1, TokenKind::RParen),
             '{' => tok!(1, TokenKind::LBrace),
             '}' => tok!(1, TokenKind::RBrace),
+            '[' => tok!(1, TokenKind::LBracket),
+            ']' => tok!(1, TokenKind::RBracket),
             ',' => tok!(1, TokenKind::Comma),
             '#' => {
                 let start = byte_pos + 1;

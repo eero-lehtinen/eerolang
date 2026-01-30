@@ -212,6 +212,12 @@ impl<'a> Compilation<'a> {
             AstNodeKind::FunctionCall { .. } => {
                 self.compile_function_call(expr, false);
             }
+            AstNodeKind::Subscript { target, key } => {
+                self.compile_expression(target, to_decl);
+                self.compile_expression(key, to_decl);
+                let get_index = self.builtins.get("get").unwrap().1;
+                self.push_instruction(Inst::CallBuiltin(get_index as u32, 2), expr);
+            }
             _ => todo!(),
         }
     }
@@ -509,6 +515,18 @@ impl<'a> Compilation<'a> {
         }
     }
 
+    fn compile_subscript_assign(&mut self, node: &AstNode) {
+        let AstNodeKind::SubscriptAssign { target, key, value } = &node.kind else {
+            unreachable!();
+        };
+        self.compile_expression(target, None);
+        self.compile_expression(key, None);
+        self.compile_expression(value, None);
+        let set_index = self.builtins.get("set").unwrap().1;
+        self.push_instruction(Inst::CallBuiltin(set_index as u32, 3), node);
+        self.push_instruction(Inst::Pop, node);
+    }
+
     fn block_start(&mut self, node: &'a AstNode, fn_node: Option<&'a AstNode>, is_loop: bool) {
         let AstNodeKind::Block(_) = &node.kind else {
             self.fatal("Expected block node", node);
@@ -588,6 +606,7 @@ impl<'a> Compilation<'a> {
                 AstNodeKind::Continue => self.compile_continue(node),
                 AstNodeKind::Break => self.compile_break(node),
                 AstNodeKind::IfStatement { .. } => self.compile_if_statement(node),
+                AstNodeKind::SubscriptAssign { .. } => self.compile_subscript_assign(node),
                 _ => {
                     self.fatal("Unsupported AST node in compilation", node);
                 }

@@ -96,12 +96,17 @@ push(queue, 2)
 first := pop_front(queue)
 
 # Sets a value at index or key in a list or map
-set(list, 0, "changed")
-set(map, "one", 11)
+list[0] = "changed"
+map["one"] = 11
 
-# Gets a value at index or key from a list, string or map
-elem = get(list, 0)
-elem = get("hello", 1)
+# Gets a value at index or key from a list or map
+elem = list[0]
+elem = map["one"]
+
+# Chained indexing for nested structures
+matrix := list(list(1, 2), list(3, 4))
+elem = matrix[0][1]
+matrix[1][0] = 99
 
 # Checks if a map contains a key
 exists := has(map, "three")

@@ -14,13 +14,11 @@ fn get_cell(grid, x, y, w, h) {
     if x < 0 or y < 0 or x >= w or y >= h {
         return 0
     }
-    row := get(grid, y)
-    return get(row, x)
+    return grid[y][x]
 }
 
 fn set_cell(grid, x, y, value) {
-    row := get(grid, y)
-    set(row, x, value)
+    grid[y][x] = value
 }
 
 fn count_neighbors(grid, x, y, w, h) {
@@ -61,10 +59,9 @@ fn step_grid(grid, w, h) {
 fn render(grid, w, h, step) {
     output := "Step " + string(step) + "\n"
     for y in range(h) {
-        row := get(grid, y)
         line := ""
         for x in range(w) {
-            if get(row, x) {
+            if grid[y][x] {
                 line = line + "██"
             } else {
                 line = line + "  "
@@ -97,7 +94,7 @@ gun := list(
 )
 
 for _, pos in gun {
-    set_cell(grid, get(pos, 0), get(pos, 1), 1)
+    set_cell(grid, pos[0], pos[1], 1)
 }
 
 for i in range(steps) {

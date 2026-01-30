@@ -59,6 +59,17 @@ pub enum AstNodeKind {
     Block(Vec<AstNode>),
     Literal(Literal),
     Variable(VarName),
+    /// target[key] - subscript read
+    Subscript {
+        target: Box<AstNode>,
+        key: Box<AstNode>,
+    },
+    /// target[key] = value - subscript write
+    SubscriptAssign {
+        target: Box<AstNode>,
+        key: Box<AstNode>,
+        value: Box<AstNode>,
+    },
 }
 
 #[derive(Debug)]
@@ -354,13 +365,13 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
     let token = iter.peek()?;
     let token_idx = token.index;
 
-    match &token.kind {
+    let mut atom = match &token.kind {
         TokenKind::Operator(Operator::Sub) => {
             iter.next();
             let expr = parse_primary_expression(iter).unwrap_or_else(|| {
                 fatal("Expected expression after '-'", iter.peek().unwrap());
             });
-            Some(AstNode {
+            AstNode {
                 token_idx,
                 kind: AstNodeKind::BinaryOp {
                     left: Box::new(AstNode {
@@ -370,25 +381,26 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                     op: Operator::Sub,
                     right: Box::new(expr),
                 },
-            })
+            }
         }
         TokenKind::Literal(lit) => {
             iter.next();
-            Some(AstNode {
+            AstNode {
                 token_idx,
                 kind: AstNodeKind::Literal(lit.clone()),
-            })
+            }
         }
         TokenKind::Ident(ident) => {
             let ident_token_idx = iter.next().unwrap().index;
+            let ident = ident.clone();
             trace!("Parsing identifier: {}", ident);
-            if let Some(fcall) = parse_function_call(ident_token_idx, ident, iter) {
-                Some(fcall)
+            if let Some(fcall) = parse_function_call(ident_token_idx, &ident, iter) {
+                fcall
             } else {
-                Some(AstNode {
+                AstNode {
                     token_idx: ident_token_idx,
-                    kind: AstNodeKind::Variable(ident.clone()),
-                })
+                    kind: AstNodeKind::Variable(ident),
+                }
             }
         }
         TokenKind::LParen => {
@@ -401,10 +413,31 @@ fn parse_primary_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Optio
                 fatal("Expected closing parenthesis", next);
             }
             iter.next();
-            Some(expr)
+            expr
         }
-        _ => None,
+        _ => None?,
+    };
+
+    while let Some(TokenKind::LBracket) = iter.peek().map(|t| &t.kind) {
+        let bracket_token_idx = iter.next().unwrap().index;
+        let key_expr = parse_expression(iter).unwrap_or_else(|| {
+            fatal("Expected expression after '['", iter.peek().unwrap());
+        });
+        let next = iter.peek().unwrap();
+        if next.kind != TokenKind::RBracket {
+            fatal("Expected ']' after expression", next);
+        }
+        iter.next();
+        atom = AstNode {
+            token_idx: bracket_token_idx,
+            kind: AstNodeKind::Subscript {
+                target: Box::new(atom),
+                key: Box::new(key_expr),
+            },
+        };
     }
+
+    Some(atom)
 }
 
 fn parse_expression<'a, I: TokIter<'a>>(iter: &mut Peekable<I>) -> Option<AstNode> {
@@ -477,34 +510,95 @@ fn parse_statement<'a, I: TokIter<'a>>(
         TokenKind::Ident(ident) => {
             let ident_token = iter.next();
             let ident_token_idx = ident_token.unwrap().index;
-            match &iter.peek().unwrap().kind {
-                TokenKind::DeclareAssign => {
+            let ident = ident.clone();
+
+            match iter.peek().map(|t| &t.kind) {
+                Some(TokenKind::DeclareAssign) => {
                     trace!("Parsing declaration and assignment of {}", ident);
                     iter.next();
                     let expr = parse_expression(iter).unwrap();
                     AstNode {
                         token_idx: ident_token_idx,
                         kind: AstNodeKind::DeclareAssign {
-                            name: ident.clone(),
+                            name: ident,
                             expr: Box::new(expr),
                         },
                     }
                 }
-                TokenKind::Assign => {
+                Some(TokenKind::Assign) => {
                     trace!("Parsing assignment to {}", ident);
                     iter.next();
                     let expr = parse_expression(iter).unwrap();
                     AstNode {
                         token_idx: ident_token_idx,
                         kind: AstNodeKind::Assign {
-                            name: ident.clone(),
+                            name: ident,
                             expr: Box::new(expr),
                         },
                     }
                 }
+                Some(TokenKind::LBracket) => {
+                    trace!(
+                        "Parsing potential subscript assignment starting with {}",
+                        ident
+                    );
+
+                    let mut target = AstNode {
+                        token_idx: ident_token_idx,
+                        kind: AstNodeKind::Variable(ident),
+                    };
+
+                    let mut last_bracket_idx = ident_token_idx;
+                    let mut last_key: Option<AstNode> = None;
+
+                    while iter.peek().is_some_and(|t| t.kind == TokenKind::LBracket) {
+                        let bracket_token_idx = iter.next().unwrap().index;
+                        let key_expr = parse_expression(iter).unwrap_or_else(|| {
+                            fatal("Expected expression after '['", iter.peek().unwrap());
+                        });
+                        let next = iter.peek().unwrap();
+                        if next.kind != TokenKind::RBracket {
+                            fatal("Expected ']' after expression", next);
+                        }
+                        iter.next();
+
+                        if let Some(prev_key) = last_key.take() {
+                            target = AstNode {
+                                token_idx: last_bracket_idx,
+                                kind: AstNodeKind::Subscript {
+                                    target: Box::new(target),
+                                    key: Box::new(prev_key),
+                                },
+                            };
+                        }
+
+                        last_bracket_idx = bracket_token_idx;
+                        last_key = Some(key_expr);
+                    }
+
+                    if iter.peek().is_some_and(|t| t.kind == TokenKind::Assign) {
+                        iter.next();
+                        let value_expr = parse_expression(iter).unwrap_or_else(|| {
+                            fatal("Expected expression after '='", iter.peek().unwrap());
+                        });
+                        AstNode {
+                            token_idx: last_bracket_idx,
+                            kind: AstNodeKind::SubscriptAssign {
+                                target: Box::new(target),
+                                key: Box::new(last_key.unwrap()),
+                                value: Box::new(value_expr),
+                            },
+                        }
+                    } else {
+                        fatal(
+                            "Expected '=' after subscript expression in statement",
+                            iter.peek().unwrap(),
+                        );
+                    }
+                }
                 _ => {
                     trace!("Parsing function call starting with identifier {}", ident);
-                    parse_function_call(ident_token_idx, ident, iter).unwrap_or_else(|| {
+                    parse_function_call(ident_token_idx, &ident, iter).unwrap_or_else(|| {
                         fatal("Unexpected token after ident", iter.peek().unwrap());
                     })
                 }
