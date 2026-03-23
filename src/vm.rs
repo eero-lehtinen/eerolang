@@ -4,12 +4,11 @@ use foldhash::HashMap;
 use log::{info, trace};
 
 use crate::{
-    TOKENS,
-    ast_parser::{CallLocation, fatal_with_stack},
-    builtins::{ProgramFn, builtin_get},
-    compiler::{Compilation, binary_op_err},
+    ast_parser::{fatal_with_stack, CallLocation},
+    builtins::{builtin_get, ProgramFn},
+    compiler::{binary_op_err, Compilation},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
-    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
+    tokenizer::{find_source_char_col, report_source_pos, Operator, Token, TokenKind},
     value::{Map, Value, ValueRef},
 };
 
@@ -22,6 +21,7 @@ const RECURSION_LIMIT: usize = 2 << 15;
 pub struct Vm<'a> {
     instructions: Vec<Inst>,
     ip_to_token: Vec<usize>,
+    source: &'a str,
     tokens: &'a [Token],
     inst_ptr: usize,
     stack: Vec<Value>,
@@ -65,6 +65,7 @@ impl<'a> Vm<'a> {
         Vm {
             instructions: ctx.instructions,
             ip_to_token: ctx.ip_to_token,
+            source: ctx.source,
             tokens: ctx.tokens,
             inst_ptr: 0,
             stack: vec![Value::default(); STACK_SIZE as usize],
@@ -110,6 +111,8 @@ impl<'a> Vm<'a> {
             .collect();
 
         fatal_with_stack(
+            self.source,
+            self.tokens,
             msg,
             &format!(
                 "Fatal error during VM execution {}",
@@ -453,7 +456,8 @@ impl<'a> Vm<'a> {
                 Inst::CallBuiltin(index, args) => {
                     trace!(
                         "Call builtin function {} with {} args",
-                        self.builtins[index as usize].1, args
+                        self.builtins[index as usize].1,
+                        args
                     );
                     debug_assert!((index as usize) < self.builtins.len());
                     // SAFETY: non-existent functions should be hard to call
@@ -509,7 +513,10 @@ impl<'a> Vm<'a> {
                         let (fn_name, _, _) = self.functions.get(&fn_ip).unwrap();
                         trace!(
                             "Return to IP {}, restored frame ptr {} from function '{}' at {}",
-                            return_ip, frame_ptr, fn_name, fn_ip
+                            return_ip,
+                            frame_ptr,
+                            fn_name,
+                            fn_ip
                         );
                     }
 
@@ -623,10 +630,11 @@ impl<'a> Vm<'a> {
         }
 
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
-        let char_col = find_source_char_col(token.line, token.byte_col);
+        let char_col = find_source_char_col(self.source, token.line, token.byte_col);
 
         report_source_pos(
-            TOKENS.get().unwrap(),
+            self.source,
+            self.tokens,
             token.line,
             char_col,
             token.byte_pos_start,

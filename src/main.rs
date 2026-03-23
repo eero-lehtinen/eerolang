@@ -1,4 +1,5 @@
-use crate::{tokenizer::Token, vm::Vm};
+use crate::vm::Vm;
+use bumpalo::Bump;
 use clap::Parser;
 use log::{error, warn};
 use std::{sync::OnceLock, time::Instant};
@@ -11,9 +12,6 @@ mod tokenizer;
 mod value;
 mod vm;
 
-// Store these for convenient error reporting purposes.
-static SOURCE: OnceLock<String> = OnceLock::new();
-static TOKENS: OnceLock<Vec<Token>> = OnceLock::new();
 static EXTRA_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
 #[derive(Parser)]
@@ -74,19 +72,18 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let source_code = SOURCE.get_or_init(|| source_code);
 
     let tok_start = Instant::now();
-    let tokens = tokenizer::tokenize(source_code, cli.tokens);
+    let tokens = tokenizer::tokenize(&source_code, cli.tokens);
     let tok_end = Instant::now();
-    let tokens = TOKENS.get_or_init(|| tokens);
 
     let parse_start = Instant::now();
-    let block = ast_parser::parse(tokens);
+    let bump = Bump::new();
+    let block = ast_parser::parse(&bump, &source_code, &tokens);
     let parse_end = Instant::now();
 
     let compile_start = Instant::now();
-    let compilation = compiler::compile(&block, tokens);
+    let compilation = compiler::compile(block, &source_code, &tokens);
     let compile_end = Instant::now();
 
     let exec_start = Instant::now();

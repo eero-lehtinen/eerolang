@@ -5,8 +5,6 @@ use std::{
 
 use colored::Colorize;
 
-use crate::SOURCE;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     DeclareAssign,
@@ -181,11 +179,12 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             ($msg:expr) => {
                 let byte_pos_end = iter.peek().map_or(byte_pos + 1, |(i, _)| *i + 1);
                 let byte_col = byte_pos - byte_row_start;
-                let char_col = find_source_char_col(row, byte_col);
+                let char_col = find_source_char_col(source, row, byte_col);
                 eprintln!("Tokenization failed");
                 eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
                 let context = 2;
                 report_source_pos(
+                    source,
                     &tokens,
                     row,
                     byte_col,
@@ -374,16 +373,14 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     }
 
     if show {
-        print_colored_tokens(&tokens, None);
+        print_colored_tokens(source, &tokens, None);
     }
 
     tokens
 }
 
-pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
-    SOURCE
-        .get()
-        .unwrap()
+pub fn find_source_char_col(source: &str, row: usize, byte_col: usize) -> usize {
+    source
         .lines()
         .nth(row)
         .and_then(|line| {
@@ -401,6 +398,7 @@ pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
 }
 
 pub fn report_source_pos(
+    source: &str,
     tokens: &[Token],
     row: usize,
     char_col: usize,
@@ -410,6 +408,7 @@ pub fn report_source_pos(
     color: colored::Color,
 ) {
     print_colored_tokens(
+        source,
         tokens,
         Some((
             row,
@@ -423,10 +422,10 @@ pub fn report_source_pos(
 }
 
 fn print_colored_tokens(
+    source: &str,
     tokens: &[Token],
     highlight: Option<(usize, usize, usize, usize, usize, colored::Color)>,
 ) {
-    let source = SOURCE.get().unwrap();
     let mut stderr = std::io::stderr().lock();
 
     let line_start = |out: &mut StderrLock, line: usize| {
