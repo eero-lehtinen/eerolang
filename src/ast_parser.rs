@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::iter::Peekable;
 
 use bumpalo::Bump;
@@ -14,6 +15,9 @@ pub struct ParseCtx<'b> {
     pub bump: &'b Bump,
     pub source: &'b str,
     pub tokens: &'b [Token<'b>],
+    /// Shared scratch buffer for collecting AST nodes before freezing them into
+    /// bump-allocated slices.
+    scratch: RefCell<Vec<AstNode<'b>>>,
 }
 
 fn fatal_at_last_token(ctx: &ParseCtx, msg: &str) -> ! {
@@ -138,6 +142,25 @@ impl<'a> AstNode<'a> {
     }
 }
 
+impl<'b> ParseCtx<'b> {
+    /// Saves the current scratch buffer length. The caller should push items,
+    /// then call `scratch_take_since` to drain and bump-allocate only their portion.
+    fn scratch_start(&self) -> usize {
+        self.scratch.borrow().len()
+    }
+
+    fn scratch_push(&self, node: AstNode<'b>) {
+        self.scratch.borrow_mut().push(node);
+    }
+
+    /// Drains items pushed since `start`, bump-allocates them as a slice,
+    /// and restores the scratch buffer to its previous length.
+    fn scratch_take_since(&self, start: usize) -> &'b [AstNode<'b>] {
+        let mut scratch = self.scratch.borrow_mut();
+        self.bump.alloc_slice_fill_iter(scratch.drain(start..))
+    }
+}
+
 trait TokIter<'a>: Iterator<Item = &'a Token<'a>> + Clone {}
 impl<'a, T: Iterator<Item = &'a Token<'a>> + Clone> TokIter<'a> for T {}
 
@@ -191,7 +214,7 @@ fn parse_function_call<'b, I: TokIter<'b>>(
         return None;
     };
     iter.next();
-    let mut args = Vec::new();
+    let scratch_start = ctx.scratch_start();
     parse_list(
         ctx,
         iter,
@@ -199,14 +222,14 @@ fn parse_function_call<'b, I: TokIter<'b>>(
         TokenKind::RParen,
         "Expected ')' to close function call",
         |_, arg_node| {
-            args.push(arg_node);
+            ctx.scratch_push(arg_node);
         },
     );
     Some(AstNode {
         token_idx: ident_token_idx,
         kind: AstNodeKind::FunctionCall {
             name: ident,
-            args: ctx.bump.alloc_slice_fill_iter(args),
+            args: ctx.scratch_take_since(scratch_start),
         },
     })
 }
@@ -229,7 +252,7 @@ fn parse_block<'b, I: TokIter<'b>>(
     } else {
         0
     };
-    let mut block = Vec::new();
+    let scratch_start = ctx.scratch_start();
     let mut found_rbrace = false;
 
     while let Some(token) = iter.peek().cloned() {
@@ -239,7 +262,7 @@ fn parse_block<'b, I: TokIter<'b>>(
             break;
         }
         if let Some(node) = parse_statement(ctx, iter, top_level, in_loop, in_function) {
-            block.push(node);
+            ctx.scratch_push(node);
         } else {
             fatal(ctx, "Unexpected token in block", token);
         }
@@ -251,7 +274,7 @@ fn parse_block<'b, I: TokIter<'b>>(
 
     ctx.bump.alloc(AstNode {
         token_idx,
-        kind: AstNodeKind::Block(ctx.bump.alloc_slice_fill_iter(block)),
+        kind: AstNodeKind::Block(ctx.scratch_take_since(scratch_start)),
     })
 }
 
@@ -276,7 +299,7 @@ fn parse_function_definition<'b, I: TokIter<'b>>(
         "Expected '(' after function name",
     );
 
-    let mut params = Vec::new();
+    let scratch_start = ctx.scratch_start();
     parse_list(
         ctx,
         iter,
@@ -291,13 +314,14 @@ fn parse_function_definition<'b, I: TokIter<'b>>(
                     tok,
                 );
             };
-            params.push(AstNode {
+            ctx.scratch_push(AstNode {
                 token_idx: param_node.token_idx,
                 kind: AstNodeKind::Declaration(v),
             });
         },
     );
 
+    let params = ctx.scratch_take_since(scratch_start);
     trace!("Parsing function definition, parameters: {:?}", params);
 
     let body = parse_block(ctx, iter, false, false, true);
@@ -306,7 +330,7 @@ fn parse_function_definition<'b, I: TokIter<'b>>(
         token_idx,
         kind: AstNodeKind::FunctionDefinition {
             name: func_name,
-            params: ctx.bump.alloc_slice_fill_iter(params),
+            params,
             body,
         },
     }
@@ -847,6 +871,7 @@ pub fn parse<'b>(bump: &'b Bump, source: &'b str, tokens: &'b [Token<'b>]) -> &'
         bump,
         source,
         tokens,
+        scratch: RefCell::new(Vec::new()),
     };
 
     let mut iter = tokens
