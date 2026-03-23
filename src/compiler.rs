@@ -13,15 +13,15 @@ use crate::{
 struct ScopeData<'a> {
     declarations: Vec<(&'a str, Addr)>,
     /// Stored at the root of the scope stack for function scopes.
-    fn_data: Option<FnData>,
+    fn_data: Option<FnData<'a>>,
     loop_data: Option<LoopData>,
 }
 
-#[derive(Debug, Default)]
-struct FnData {
+#[derive(Debug)]
+struct FnData<'a> {
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
-    local_names: Vec<String>,
-    param_names: Vec<String>,
+    local_names: Vec<&'a str>,
+    param_count: u32,
 }
 
 #[derive(Debug)]
@@ -39,7 +39,7 @@ pub struct Compilation<'a> {
     pub global_names: Vec<&'a str>,
     pub builtins: HashMap<&'a str, (ProgramFn, usize, ArgsRequred)>,
     /// Holds start ip, arg names, local names
-    pub functions: HashMap<&'a str, (u32, Vec<&'a str>, Vec<String>)>,
+    pub functions: HashMap<&'a str, (u32, Vec<&'a str>, Vec<&'a str>)>,
     pub source: &'a str,
     pub tokens: &'a [Token<'a>],
     pub ip_to_token: Vec<usize>,
@@ -104,7 +104,7 @@ impl<'a> Compilation<'a> {
 
     fn declare_variable(&mut self, name: &'a str, node: &AstNode<'_>) -> Addr {
         let addr = if let Some(fn_data) = self.fn_data() {
-            fn_data.local_names.push(name.to_string());
+            fn_data.local_names.push(name);
             Addr::Local(LocalAddr(fn_data.local_names.len() as i32))
         } else {
             self.global_names.push(name);
@@ -271,11 +271,13 @@ impl<'a> Compilation<'a> {
 
         self.compile_block(body);
 
-        let local_names = self
-            .fn_data()
-            .expect("Function data should exist in function scope")
-            .local_names
-            .clone();
+        let local_names = std::mem::take(
+            &mut self.scopes[1]
+                .fn_data
+                .as_mut()
+                .expect("Function data should exist in function scope")
+                .local_names,
+        );
         let locals_count = local_names.len() as u32;
         self.functions.get_mut(*name).unwrap().2 = local_names;
 
@@ -307,9 +309,8 @@ impl<'a> Compilation<'a> {
         let args_count = self
             .fn_data()
             .expect("Function data should exist in function scope")
-            .param_names
-            .len();
-        self.push_instruction(Inst::Return(args_count as u32), node);
+            .param_count;
+        self.push_instruction(Inst::Return(args_count), node);
     }
 
     fn compile_function_args(&mut self, args: &[AstNode<'_>]) {
@@ -549,15 +550,10 @@ impl<'a> Compilation<'a> {
             let AstNodeKind::FunctionDefinition { params, .. } = &fn_node.kind else {
                 self.fatal("Expected function definition node", fn_node);
             };
-            let mut fn_data = FnData::default();
-
-            for param in params.iter() {
-                let param_name = param
-                    .get_var_name()
-                    .expect("Function argument should be a variable");
-                fn_data.param_names.push(param_name.to_string());
-            }
-            Some(fn_data)
+            Some(FnData {
+                local_names: Vec::new(),
+                param_count: params.len() as u32,
+            })
         } else {
             None
         };
@@ -589,7 +585,7 @@ impl<'a> Compilation<'a> {
         panic!("No loop data found in current scopes");
     }
 
-    fn fn_data(&mut self) -> Option<&mut FnData> {
+    fn fn_data(&mut self) -> Option<&mut FnData<'a>> {
         self.scopes
             .get_mut(1)
             .and_then(|scope| scope.fn_data.as_mut())
