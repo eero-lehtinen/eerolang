@@ -184,15 +184,19 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                 eprintln!("Tokenization failed");
                 eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
                 let context = 2;
-                report_source_pos(
+                report_source(
                     source,
                     &tokens,
-                    row,
-                    byte_col,
-                    byte_pos,
-                    byte_pos_end,
-                    context,
-                    colored::Color::BrightRed,
+                    Some((
+                        SourcePos {
+                            row,
+                            char_col: byte_col,
+                            byte_pos_start: byte_pos,
+                            byte_pos_end,
+                        },
+                        context as usize,
+                        colored::Color::BrightRed,
+                    )),
                 );
                 std::process::exit(1);
             };
@@ -381,7 +385,7 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
     }
 
     if show {
-        print_colored_tokens(source, &tokens, None);
+        report_source(source, &tokens, None);
     }
 
     tokens
@@ -405,35 +409,18 @@ pub fn find_source_char_col(source: &str, row: usize, byte_col: usize) -> usize 
         .unwrap_or(0)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn report_source_pos(
-    source: &str,
-    tokens: &[Token<'_>],
-    row: usize,
-    char_col: usize,
-    byte_pos_start: usize,
-    byte_pos_end: usize,
-    context: u32,
-    color: colored::Color,
-) {
-    print_colored_tokens(
-        source,
-        tokens,
-        Some((
-            row,
-            context as usize,
-            char_col,
-            byte_pos_start,
-            byte_pos_end,
-            color,
-        )),
-    );
+#[derive(Debug, Clone, Copy)]
+pub struct SourcePos {
+    pub row: usize,
+    pub char_col: usize,
+    pub byte_pos_start: usize,
+    pub byte_pos_end: usize,
 }
 
-fn print_colored_tokens(
+pub fn report_source(
     source: &str,
     tokens: &[Token<'_>],
-    highlight: Option<(usize, usize, usize, usize, usize, colored::Color)>,
+    highlight: Option<(SourcePos, usize, colored::Color)>,
 ) {
     let mut stderr = std::io::stderr().lock();
 
@@ -449,15 +436,15 @@ fn print_colored_tokens(
     };
 
     let show_hl = |out: &mut StderrLock, line: usize| {
-        if let Some((err_line, _, err_col, byte_pos_start, byte_pos_end, color)) = highlight
-            && line == err_line
+        if let Some((pos, _, color)) = highlight
+            && line == pos.row
         {
             writeln!(
                 out,
                 "{}{}{}",
-                " ".repeat(err_col + 7),
+                " ".repeat(pos.char_col + 7),
                 "^".color(color),
-                "~".repeat((byte_pos_end - byte_pos_start).saturating_sub(1))
+                "~".repeat((pos.byte_pos_end - pos.byte_pos_start).saturating_sub(1))
                     .color(color)
             )
             .unwrap();
@@ -471,13 +458,13 @@ fn print_colored_tokens(
     let mut byte_pos = 0;
     let bytes = source.as_bytes();
 
-    if let Some((row, context, ..)) = &highlight
-        && row.saturating_sub(*context) > 0
+    if let Some((pos, context, ..)) = &highlight
+        && pos.row.saturating_sub(*context) > 0
     {
         while byte_pos < source.len() {
             let ch = bytes[byte_pos] as char;
             if ch == '\n' {
-                if line + 1 >= row.saturating_sub(*context) {
+                if line + 1 >= pos.row.saturating_sub(*context) {
                     break;
                 }
                 line += 1;
@@ -488,8 +475,8 @@ fn print_colored_tokens(
 
     let hl_color = |byte_pos: usize, tok: Option<&&Token<'_>>| {
         let byte_pos = tok.map(|t| t.byte_pos_start).unwrap_or(byte_pos);
-        highlight.and_then(|(_, _, _, err_byte_pos_start, err_byte_pos_end, color)| {
-            if byte_pos >= err_byte_pos_start && byte_pos < err_byte_pos_end {
+        highlight.and_then(|(pos, _, color)| {
+            if byte_pos >= pos.byte_pos_start && byte_pos < pos.byte_pos_end {
                 Some(color)
             } else {
                 None
@@ -511,8 +498,8 @@ fn print_colored_tokens(
         if ch == '\n' {
             writeln!(stderr).unwrap();
 
-            if let Some((row, context, ..)) = highlight
-                && (line + 1) > row + context
+            if let Some((pos, context, ..)) = highlight
+                && (line + 1) > pos.row + context
             {
                 break;
             }

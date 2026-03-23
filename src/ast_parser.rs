@@ -6,7 +6,7 @@ use colored::Colorize;
 use log::trace;
 
 use crate::tokenizer::{
-    Literal, Operator, Token, TokenKind, find_source_char_col, report_source_pos,
+    Literal, Operator, SourcePos, Token, TokenKind, find_source_char_col, report_source,
 };
 
 /// Bundles shared state needed throughout the parser: the bump allocator,
@@ -827,15 +827,19 @@ pub fn fatal_with_stack(
         token.line + 1,
         char_col + 1,
     );
-    report_source_pos(
+    report_source(
         source,
         tokens,
-        token.line,
-        char_col,
-        token.byte_pos_start,
-        token.byte_pos_end,
-        2,
-        colored::Color::BrightRed,
+        Some((
+            SourcePos {
+                row: token.line,
+                char_col,
+                byte_pos_start: token.byte_pos_start,
+                byte_pos_end: token.byte_pos_end,
+            },
+            2,
+            colored::Color::BrightRed,
+        )),
     );
 
     if !call_stack.is_empty() {

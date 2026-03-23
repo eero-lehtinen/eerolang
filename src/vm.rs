@@ -8,7 +8,7 @@ use crate::{
     builtins::{ProgramFn, builtin_get},
     compiler::{Compilation, binary_op_err},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
-    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
+    tokenizer::{Operator, SourcePos, Token, TokenKind, find_source_char_col, report_source},
     value::{Map, Value, ValueRef},
 };
 
@@ -623,15 +623,19 @@ impl<'a> Vm<'a> {
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
         let char_col = find_source_char_col(self.source, token.line, token.byte_col);
 
-        report_source_pos(
+        report_source(
             self.source,
             self.tokens,
-            token.line,
-            char_col,
-            token.byte_pos_start,
-            token.byte_pos_end,
-            1,
-            colored::Color::BrightYellow,
+            Some((
+                SourcePos {
+                    row: token.line,
+                    char_col,
+                    byte_pos_start: token.byte_pos_start,
+                    byte_pos_end: token.byte_pos_end,
+                },
+                1,
+                colored::Color::BrightYellow,
+            )),
         );
 
         // Get argument and local names for the current function frame
