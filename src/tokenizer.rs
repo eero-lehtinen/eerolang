@@ -3,12 +3,11 @@ use std::{
     io::{StderrLock, Write},
 };
 
+use bumpalo::Bump;
 use colored::Colorize;
 
-use crate::SOURCE;
-
 #[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
+pub enum TokenKind<'a> {
     DeclareAssign,
     Assign,
     Operator(Operator),
@@ -19,8 +18,8 @@ pub enum TokenKind {
     LBracket,
     RBracket,
     Comma,
-    Literal(Literal),
-    Ident(String),
+    Literal(Literal<'a>),
+    Ident(&'a str),
     KeywordFor,
     KeywordWhile,
     KeywordIn,
@@ -34,13 +33,13 @@ pub enum TokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Literal {
+pub enum Literal<'a> {
     Number(f64),
-    String(String),
+    String(&'a str),
     Null,
 }
 
-impl TokenKind {
+impl TokenKind<'_> {
     pub fn color(&self) -> colored::Color {
         match self {
             TokenKind::DeclareAssign | TokenKind::Assign | TokenKind::Operator(_) => {
@@ -70,7 +69,7 @@ impl TokenKind {
     }
 }
 
-impl Display for TokenKind {
+impl Display for TokenKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TokenKind::DeclareAssign => write!(f, ":="),
@@ -100,13 +99,13 @@ impl Display for TokenKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct Token {
+pub struct Token<'a> {
     pub line: usize,
     pub byte_col: usize,
     pub byte_pos_start: usize,
     pub byte_pos_end: usize,
     pub index: usize,
-    pub kind: TokenKind,
+    pub kind: TokenKind<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,7 +161,7 @@ impl Display for Operator {
     }
 }
 
-pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
+pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a>> {
     let mut tokens = Vec::new();
     let mut iter = source.char_indices().peekable();
     let mut tbuf = String::new();
@@ -181,11 +180,12 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             ($msg:expr) => {
                 let byte_pos_end = iter.peek().map_or(byte_pos + 1, |(i, _)| *i + 1);
                 let byte_col = byte_pos - byte_row_start;
-                let char_col = find_source_char_col(row, byte_col);
+                let char_col = find_source_char_col(source, row, byte_col);
                 eprintln!("Tokenization failed");
                 eprintln!("{} at line {}, column {}:", &$msg, row + 1, char_col + 1);
                 let context = 2;
                 report_source_pos(
+                    source,
                     &tokens,
                     row,
                     byte_col,
@@ -276,11 +276,14 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
             '"' => {
                 tbuf.clear();
                 let mut escape = false;
+                let mut has_escapes = false;
                 let mut tok_len = 0;
+                let str_content_start = byte_pos + 1; // after the opening quote
                 for (_, next_ch) in iter.by_ref() {
                     tok_len += next_ch.len_utf8();
                     if next_ch == '\\' && !escape {
                         escape = true;
+                        has_escapes = true;
                         continue;
                     }
                     if next_ch == '"' && !escape {
@@ -300,10 +303,14 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     }
                     escape = false;
                 }
-                tok!(
-                    tok_len + 1,
-                    TokenKind::Literal(Literal::String(tbuf.clone()))
-                );
+                let str_val: &'a str = if has_escapes {
+                    bump.alloc_str(&tbuf)
+                } else {
+                    // No escapes: borrow directly from source (content between quotes)
+                    let str_content_end = str_content_start + tok_len - 1; // before the closing quote
+                    &source[str_content_start..str_content_end]
+                };
+                tok!(tok_len + 1, TokenKind::Literal(Literal::String(str_val)));
                 tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
@@ -329,7 +336,7 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
                     "and" => tok!("and".len(), TokenKind::Operator(Operator::And)),
                     "or" => tok!("or".len(), TokenKind::Operator(Operator::Or)),
                     "null" => tok!("null".len(), TokenKind::Literal(Literal::Null)),
-                    ident => tok!(ident.len(), TokenKind::Ident(ident.to_string())),
+                    ident => tok!(ident.len(), TokenKind::Ident(ident)),
                 }
             }
             ch if ch.is_ascii_digit() => {
@@ -374,16 +381,14 @@ pub fn tokenize(source: &'_ str, show: bool) -> Vec<Token> {
     }
 
     if show {
-        print_colored_tokens(&tokens, None);
+        print_colored_tokens(source, &tokens, None);
     }
 
     tokens
 }
 
-pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
-    SOURCE
-        .get()
-        .unwrap()
+pub fn find_source_char_col(source: &str, row: usize, byte_col: usize) -> usize {
+    source
         .lines()
         .nth(row)
         .and_then(|line| {
@@ -400,8 +405,10 @@ pub fn find_source_char_col(row: usize, byte_col: usize) -> usize {
         .unwrap_or(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn report_source_pos(
-    tokens: &[Token],
+    source: &str,
+    tokens: &[Token<'_>],
     row: usize,
     char_col: usize,
     byte_pos_start: usize,
@@ -410,6 +417,7 @@ pub fn report_source_pos(
     color: colored::Color,
 ) {
     print_colored_tokens(
+        source,
         tokens,
         Some((
             row,
@@ -423,10 +431,10 @@ pub fn report_source_pos(
 }
 
 fn print_colored_tokens(
-    tokens: &[Token],
+    source: &str,
+    tokens: &[Token<'_>],
     highlight: Option<(usize, usize, usize, usize, usize, colored::Color)>,
 ) {
-    let source = SOURCE.get().unwrap();
     let mut stderr = std::io::stderr().lock();
 
     let line_start = |out: &mut StderrLock, line: usize| {
@@ -478,7 +486,7 @@ fn print_colored_tokens(
         }
     }
 
-    let hl_color = |byte_pos: usize, tok: Option<&&Token>| {
+    let hl_color = |byte_pos: usize, tok: Option<&&Token<'_>>| {
         let byte_pos = tok.map(|t| t.byte_pos_start).unwrap_or(byte_pos);
         highlight.and_then(|(_, _, _, err_byte_pos_start, err_byte_pos_end, color)| {
             if byte_pos >= err_byte_pos_start && byte_pos < err_byte_pos_end {

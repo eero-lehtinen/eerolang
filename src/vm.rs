@@ -4,7 +4,6 @@ use foldhash::HashMap;
 use log::{info, trace};
 
 use crate::{
-    TOKENS,
     ast_parser::{CallLocation, fatal_with_stack},
     builtins::{ProgramFn, builtin_get},
     compiler::{Compilation, binary_op_err},
@@ -22,7 +21,8 @@ const RECURSION_LIMIT: usize = 2 << 15;
 pub struct Vm<'a> {
     instructions: Vec<Inst>,
     ip_to_token: Vec<usize>,
-    tokens: &'a [Token],
+    source: &'a str,
+    tokens: &'a [Token<'a>],
     inst_ptr: usize,
     stack: Vec<Value>,
     frame_ptr: usize,
@@ -30,9 +30,9 @@ pub struct Vm<'a> {
     globals: Vec<Value>,
     global_names: Vec<&'a str>,
     constants: Vec<Value>,
-    builtins: Vec<(ProgramFn, String)>,
+    builtins: Vec<(ProgramFn, &'a str)>,
     /// Maps ip to (function name, parameter names, local variable names)
-    functions: HashMap<u32, (String, Vec<&'a str>, Vec<String>)>,
+    functions: HashMap<u32, (&'a str, Vec<&'a str>, Vec<&'a str>)>,
     /// (frame_ptr, return_ip, function_ip)
     call_frames: Vec<(u32, u32, u32)>,
     stop_at_line: Option<usize>,
@@ -46,33 +46,29 @@ fn placeholder_func(_: &[Value]) -> Result<Value, String> {
 #[allow(dead_code)]
 impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
-        let mut builtins = vec![(placeholder_func as ProgramFn, String::new()); ctx.builtins.len()];
+        let mut builtins = vec![(placeholder_func as ProgramFn, ""); ctx.builtins.len()];
         for (name, (func, index, _)) in ctx.builtins.iter() {
-            builtins[*index] = (*func, name.clone());
+            builtins[*index] = (*func, *name);
         }
 
         let functions = ctx
             .functions
-            .iter()
-            .map(|(name, (ip, param_names, local_names))| {
-                (
-                    *ip,
-                    (name.clone(), param_names.clone(), local_names.clone()),
-                )
-            })
+            .into_iter()
+            .map(|(name, (ip, param_names, local_names))| (ip, (name, param_names, local_names)))
             .collect();
 
         Vm {
             instructions: ctx.instructions,
             ip_to_token: ctx.ip_to_token,
+            source: ctx.source,
             tokens: ctx.tokens,
             inst_ptr: 0,
             stack: vec![Value::default(); STACK_SIZE as usize],
             frame_ptr: 0,
             stack_ptr: 0,
             globals: vec![Value::default(); ctx.global_names.len()],
-            global_names: ctx.global_names.clone(),
-            constants: ctx.constants.clone(),
+            global_names: ctx.global_names,
+            constants: ctx.constants,
             builtins,
             functions,
             call_frames: Vec::new(),
@@ -102,7 +98,7 @@ impl<'a> Vm<'a> {
                 self.functions.get(&fn_ip).map(|(fn_name, _, _)| {
                     let fn_token_idx = self.ip_to_token.get(fn_ip as usize).copied().unwrap_or(0);
                     CallLocation {
-                        function_name: fn_name.as_str(),
+                        function_name: fn_name,
                         line: self.tokens[fn_token_idx].line,
                     }
                 })
@@ -110,6 +106,8 @@ impl<'a> Vm<'a> {
             .collect();
 
         fatal_with_stack(
+            self.source,
+            self.tokens,
             msg,
             &format!(
                 "Fatal error during VM execution {}",
@@ -604,7 +602,7 @@ impl<'a> Vm<'a> {
                 if local_idx >= local_names.len() {
                     return format!("{}", addr);
                 }
-                local_names[local_idx].clone()
+                local_names[local_idx].to_string()
             } else {
                 format!("{}", addr)
             }
@@ -623,10 +621,11 @@ impl<'a> Vm<'a> {
         }
 
         let token = &self.tokens[self.ip_to_token[inst_ptr]];
-        let char_col = find_source_char_col(token.line, token.byte_col);
+        let char_col = find_source_char_col(self.source, token.line, token.byte_col);
 
         report_source_pos(
-            TOKENS.get().unwrap(),
+            self.source,
+            self.tokens,
             token.line,
             char_col,
             token.byte_pos_start,

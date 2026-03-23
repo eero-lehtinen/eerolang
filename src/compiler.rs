@@ -13,15 +13,15 @@ use crate::{
 struct ScopeData<'a> {
     declarations: Vec<(&'a str, Addr)>,
     /// Stored at the root of the scope stack for function scopes.
-    fn_data: Option<FnData>,
+    fn_data: Option<FnData<'a>>,
     loop_data: Option<LoopData>,
 }
 
-#[derive(Debug, Default)]
-struct FnData {
+#[derive(Debug)]
+struct FnData<'a> {
     /// Keeps track of variables declared in the function to figure out stack allocation for locals.
-    local_names: Vec<String>,
-    param_names: Vec<String>,
+    local_names: Vec<&'a str>,
+    param_count: u32,
 }
 
 #[derive(Debug)]
@@ -37,10 +37,11 @@ pub struct Compilation<'a> {
     /// Keeps track of variables declared outside of functions to figure out how much space to
     /// allocate at the start for globals.
     pub global_names: Vec<&'a str>,
-    pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
+    pub builtins: HashMap<&'a str, (ProgramFn, usize, ArgsRequred)>,
     /// Holds start ip, arg names, local names
-    pub functions: HashMap<String, (u32, Vec<&'a str>, Vec<String>)>,
-    pub tokens: &'a [Token],
+    pub functions: HashMap<&'a str, (u32, Vec<&'a str>, Vec<&'a str>)>,
+    pub source: &'a str,
+    pub tokens: &'a [Token<'a>],
     pub ip_to_token: Vec<usize>,
     scopes: Vec<ScopeData<'a>>,
 }
@@ -49,10 +50,10 @@ const NULL_CONST_ADDR: ConstAddr = ConstAddr(0);
 const ZERO_CONST_ADDR: ConstAddr = ConstAddr(1);
 
 impl<'a> Compilation<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token<'a>]) -> Self {
         let mut builtins = HashMap::new();
         for (i, (name, func, args)) in all_builtins().iter().enumerate() {
-            builtins.insert(name.to_string(), (*func, i, *args));
+            builtins.insert(*name, (*func, i, *args));
         }
         Compilation {
             instructions: Vec::new(),
@@ -60,15 +61,22 @@ impl<'a> Compilation<'a> {
             global_names: Vec::new(),
             builtins,
             functions: HashMap::new(),
+            source,
             tokens,
             ip_to_token: Vec::new(),
             scopes: Vec::new(),
         }
     }
 
-    fn fatal(&self, msg: &str, node: &AstNode) -> ! {
+    fn fatal(&self, msg: &str, node: &AstNode<'_>) -> ! {
         let token = &self.tokens[node.token_idx];
-        fatal_generic(msg, "Fatal error during compilation", token)
+        fatal_generic(
+            self.source,
+            self.tokens,
+            msg,
+            "Fatal error during compilation",
+            token,
+        )
     }
 
     fn cur_inst_ptr(&self) -> u32 {
@@ -79,7 +87,7 @@ impl<'a> Compilation<'a> {
         &mut self.instructions[ip as usize]
     }
 
-    fn declare_argument(&mut self, name: &'a str, total: u32, node: &'a AstNode) -> Addr {
+    fn declare_argument(&mut self, name: &'a str, total: u32, node: &AstNode<'_>) -> Addr {
         let decls = &mut self
             .scopes
             .last_mut()
@@ -94,9 +102,9 @@ impl<'a> Compilation<'a> {
         addr
     }
 
-    fn declare_variable(&mut self, name: &'a str, node: &'a AstNode) -> Addr {
+    fn declare_variable(&mut self, name: &'a str, node: &AstNode<'_>) -> Addr {
         let addr = if let Some(fn_data) = self.fn_data() {
-            fn_data.local_names.push(name.to_string());
+            fn_data.local_names.push(name);
             Addr::Local(LocalAddr(fn_data.local_names.len() as i32))
         } else {
             self.global_names.push(name);
@@ -119,7 +127,7 @@ impl<'a> Compilation<'a> {
         addr
     }
 
-    fn variable_addr(&mut self, name: &str, node: &AstNode, to_decl: Option<&str>) -> Addr {
+    fn variable_addr(&mut self, name: &str, node: &AstNode<'_>, to_decl: Option<&str>) -> Addr {
         trace!("{:?}", self.scopes);
 
         // If we are currently assigning to a declaration with the same name, we
@@ -146,7 +154,7 @@ impl<'a> Compilation<'a> {
     fn push_literal(&mut self, value: &Literal) -> ConstAddr {
         let value = match value {
             Literal::Number(n) => Value::number(*n),
-            Literal::String(s) => Value::string(s.clone()),
+            Literal::String(s) => Value::string(s.to_string()),
             Literal::Null => Value::null(),
         };
         let addr = self.constants.len() as u32;
@@ -154,15 +162,15 @@ impl<'a> Compilation<'a> {
         ConstAddr(addr)
     }
 
-    fn push_instruction(&mut self, inst: Inst, node: &AstNode) {
+    fn push_instruction(&mut self, inst: Inst, node: &AstNode<'_>) {
         self.instructions.push(inst);
         self.ip_to_token.push(node.token_idx);
     }
 
-    fn compile_assignment(&mut self, node: &'a AstNode) {
+    fn compile_assignment(&mut self, node: &'a AstNode<'a>) {
         let (var, expr, decl) = match &node.kind {
-            AstNodeKind::DeclareAssign { name, expr } => (name, expr, true),
-            AstNodeKind::Assign { name, expr } => (name, expr, false),
+            AstNodeKind::DeclareAssign { name, expr } => (name, *expr, true),
+            AstNodeKind::Assign { name, expr } => (name, *expr, false),
             _ => unreachable!(),
         };
         let var_addr = if decl {
@@ -174,7 +182,7 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::store(var_addr), node);
     }
 
-    fn compile_expression(&mut self, expr: &AstNode, to_decl: Option<&str>) {
+    fn compile_expression(&mut self, expr: &AstNode<'_>, to_decl: Option<&str>) {
         match &expr.kind {
             AstNodeKind::Literal(literal) => {
                 let addr = self.push_literal(literal);
@@ -222,7 +230,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_function_definition(&mut self, node: &'a AstNode) {
+    fn compile_function_definition(&mut self, node: &'a AstNode<'a>) {
         let AstNodeKind::FunctionDefinition { name, params, body } = &node.kind else {
             unreachable!();
         };
@@ -234,7 +242,7 @@ impl<'a> Compilation<'a> {
             );
         }
 
-        if self.functions.contains_key(name) {
+        if self.functions.contains_key(*name) {
             self.fatal(&format!("Function '{}' is already defined", name), node);
         }
 
@@ -250,11 +258,11 @@ impl<'a> Compilation<'a> {
             .map(|p| p.get_var_name().unwrap())
             .collect::<Vec<_>>();
         self.functions
-            .insert(name.clone(), (fn_start_ip, param_names, Vec::new()));
+            .insert(*name, (fn_start_ip, param_names, Vec::new()));
 
         self.block_start(body, Some(node), false);
 
-        for arg in params {
+        for arg in params.iter() {
             let arg_name = arg
                 .get_var_name()
                 .expect("Function argument should be a variable");
@@ -263,13 +271,15 @@ impl<'a> Compilation<'a> {
 
         self.compile_block(body);
 
-        let local_names = self
-            .fn_data()
-            .expect("Function data should exist in function scope")
-            .local_names
-            .clone();
+        let local_names = std::mem::take(
+            &mut self.scopes[1]
+                .fn_data
+                .as_mut()
+                .expect("Function data should exist in function scope")
+                .local_names,
+        );
         let locals_count = local_names.len() as u32;
-        self.functions.get_mut(name).unwrap().2 = local_names;
+        self.functions.get_mut(*name).unwrap().2 = local_names;
 
         // Recursive calls may not have the correct number of locals yet, so update them.
         let end_ip = self.cur_inst_ptr();
@@ -291,7 +301,7 @@ impl<'a> Compilation<'a> {
         *self.inst_mut(fn_skip_jump_ip) = Inst::Jump(fn_end_ip);
     }
 
-    fn compile_return(&mut self, node: &'a AstNode) {
+    fn compile_return(&mut self, node: &AstNode<'_>) {
         let AstNodeKind::Return { expr } = &node.kind else {
             unreachable!();
         };
@@ -299,18 +309,17 @@ impl<'a> Compilation<'a> {
         let args_count = self
             .fn_data()
             .expect("Function data should exist in function scope")
-            .param_names
-            .len();
-        self.push_instruction(Inst::Return(args_count as u32), node);
+            .param_count;
+        self.push_instruction(Inst::Return(args_count), node);
     }
 
-    fn compile_function_args(&mut self, args: &[AstNode]) {
+    fn compile_function_args(&mut self, args: &[AstNode<'_>]) {
         for arg in args {
             self.compile_expression(arg, None);
         }
     }
 
-    fn compile_function_call(&mut self, node: &AstNode, discard_returned: bool) {
+    fn compile_function_call(&mut self, node: &AstNode<'_>, discard_returned: bool) {
         let AstNodeKind::FunctionCall { name, args } = &node.kind else {
             unreachable!();
         };
@@ -331,7 +340,7 @@ impl<'a> Compilation<'a> {
 
         self.compile_function_args(args);
 
-        if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
+        if let Some((_, func_index, args_req)) = self.builtins.get(*name).cloned() {
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
             }
@@ -340,7 +349,7 @@ impl<'a> Compilation<'a> {
                 Inst::CallBuiltin(func_index as u32, args.len() as u32),
                 node,
             );
-        } else if let Some((fn_start_ip, decl_args, locals)) = self.functions.get(name) {
+        } else if let Some((fn_start_ip, decl_args, locals)) = self.functions.get(*name) {
             let args_req = ArgsRequred::Exact(decl_args.len() as u32);
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
@@ -364,7 +373,7 @@ impl<'a> Compilation<'a> {
     // Even if not assigned to a variable, the key needs to be stored somewhere.
     const FOR_KEY_TEMP_VAR: &'static str = "__for_key_temp";
 
-    fn compile_loop(&mut self, node: &'a AstNode) {
+    fn compile_loop(&mut self, node: &'a AstNode<'a>) {
         let (loop_next_iteration_ip, loop_continue_ip, loop_exit_jump_ip) =
             if let AstNodeKind::ForLoop {
                 key,
@@ -389,7 +398,7 @@ impl<'a> Compilation<'a> {
                 let (key_var_name, key_node) = if let Some(key_node) = key {
                     (
                         key_node.get_var_name().expect("Parsed correctly"),
-                        key_node.as_ref(),
+                        *key_node,
                     )
                 } else {
                     (Self::FOR_KEY_TEMP_VAR, node)
@@ -466,21 +475,21 @@ impl<'a> Compilation<'a> {
         self.block_end();
     }
 
-    fn compile_continue(&mut self, node: &'a AstNode) {
+    fn compile_continue(&mut self, node: &AstNode<'_>) {
         let continue_ip = self.cur_inst_ptr();
         // Placeholder
         self.push_instruction(Inst::Nop, node);
         self.loop_data_mut().continues.push(continue_ip);
     }
 
-    fn compile_break(&mut self, node: &'a AstNode) {
+    fn compile_break(&mut self, node: &AstNode<'_>) {
         let break_ip = self.cur_inst_ptr();
         // Placeholder
         self.push_instruction(Inst::Nop, node);
         self.loop_data_mut().breaks.push(break_ip);
     }
 
-    fn compile_if_statement(&mut self, node: &'a AstNode) {
+    fn compile_if_statement(&mut self, node: &'a AstNode<'a>) {
         let AstNodeKind::IfStatement {
             condition,
             body,
@@ -515,7 +524,7 @@ impl<'a> Compilation<'a> {
         }
     }
 
-    fn compile_subscript_assign(&mut self, node: &AstNode) {
+    fn compile_subscript_assign(&mut self, node: &AstNode<'_>) {
         let AstNodeKind::SubscriptAssign { target, key, value } = &node.kind else {
             unreachable!();
         };
@@ -527,7 +536,12 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::Pop, node);
     }
 
-    fn block_start(&mut self, node: &'a AstNode, fn_node: Option<&'a AstNode>, is_loop: bool) {
+    fn block_start(
+        &mut self,
+        node: &'a AstNode<'a>,
+        fn_node: Option<&'a AstNode<'a>>,
+        is_loop: bool,
+    ) {
         let AstNodeKind::Block(_) = &node.kind else {
             self.fatal("Expected block node", node);
         };
@@ -536,15 +550,10 @@ impl<'a> Compilation<'a> {
             let AstNodeKind::FunctionDefinition { params, .. } = &fn_node.kind else {
                 self.fatal("Expected function definition node", fn_node);
             };
-            let mut fn_data = FnData::default();
-
-            for param in params {
-                let param_name = param
-                    .get_var_name()
-                    .expect("Function argument should be a variable");
-                fn_data.param_names.push(param_name.to_string());
-            }
-            Some(fn_data)
+            Some(FnData {
+                local_names: Vec::new(),
+                param_count: params.len() as u32,
+            })
         } else {
             None
         };
@@ -576,19 +585,19 @@ impl<'a> Compilation<'a> {
         panic!("No loop data found in current scopes");
     }
 
-    fn fn_data(&mut self) -> Option<&mut FnData> {
+    fn fn_data(&mut self) -> Option<&mut FnData<'a>> {
         self.scopes
             .get_mut(1)
             .and_then(|scope| scope.fn_data.as_mut())
     }
 
-    fn compile_block_full(&mut self, block: &'a AstNode) {
+    fn compile_block_full(&mut self, block: &'a AstNode<'a>) {
         self.block_start(block, None, false);
         self.compile_block(block);
         self.block_end();
     }
 
-    fn compile_block(&mut self, block: &'a AstNode) {
+    fn compile_block(&mut self, block: &'a AstNode<'a>) {
         let AstNodeKind::Block(b) = &block.kind else {
             self.fatal("Expected block node", block);
         };
@@ -616,8 +625,12 @@ impl<'a> Compilation<'a> {
 }
 
 #[allow(dead_code)]
-pub fn compile<'a>(block: &'a AstNode, tokens: &'a [Token]) -> Compilation<'a> {
-    let mut c = Compilation::new(tokens);
+pub fn compile<'a>(
+    block: &'a AstNode<'a>,
+    source: &'a str,
+    tokens: &'a [Token<'a>],
+) -> Compilation<'a> {
+    let mut c = Compilation::new(source, tokens);
     c.compile_block_full(block);
     debug!("Compilation finished. Generated instructions:");
     for (i, ins) in c.instructions.iter().enumerate() {
