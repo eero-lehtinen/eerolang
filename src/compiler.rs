@@ -37,11 +37,11 @@ pub struct Compilation<'a> {
     /// Keeps track of variables declared outside of functions to figure out how much space to
     /// allocate at the start for globals.
     pub global_names: Vec<&'a str>,
-    pub builtins: HashMap<String, (ProgramFn, usize, ArgsRequred)>,
+    pub builtins: HashMap<&'a str, (ProgramFn, usize, ArgsRequred)>,
     /// Holds start ip, arg names, local names
-    pub functions: HashMap<String, (u32, Vec<&'a str>, Vec<String>)>,
+    pub functions: HashMap<&'a str, (u32, Vec<&'a str>, Vec<String>)>,
     pub source: &'a str,
-    pub tokens: &'a [Token],
+    pub tokens: &'a [Token<'a>],
     pub ip_to_token: Vec<usize>,
     scopes: Vec<ScopeData<'a>>,
 }
@@ -50,10 +50,10 @@ const NULL_CONST_ADDR: ConstAddr = ConstAddr(0);
 const ZERO_CONST_ADDR: ConstAddr = ConstAddr(1);
 
 impl<'a> Compilation<'a> {
-    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token<'a>]) -> Self {
         let mut builtins = HashMap::new();
         for (i, (name, func, args)) in all_builtins().iter().enumerate() {
-            builtins.insert(name.to_string(), (*func, i, *args));
+            builtins.insert(*name, (*func, i, *args));
         }
         Compilation {
             instructions: Vec::new(),
@@ -70,7 +70,13 @@ impl<'a> Compilation<'a> {
 
     fn fatal(&self, msg: &str, node: &AstNode<'_>) -> ! {
         let token = &self.tokens[node.token_idx];
-        fatal_generic(self.source, self.tokens, msg, "Fatal error during compilation", token)
+        fatal_generic(
+            self.source,
+            self.tokens,
+            msg,
+            "Fatal error during compilation",
+            token,
+        )
     }
 
     fn cur_inst_ptr(&self) -> u32 {
@@ -148,7 +154,7 @@ impl<'a> Compilation<'a> {
     fn push_literal(&mut self, value: &Literal) -> ConstAddr {
         let value = match value {
             Literal::Number(n) => Value::number(*n),
-            Literal::String(s) => Value::string(s.clone()),
+            Literal::String(s) => Value::string(s.to_string()),
             Literal::Null => Value::null(),
         };
         let addr = self.constants.len() as u32;
@@ -236,7 +242,7 @@ impl<'a> Compilation<'a> {
             );
         }
 
-        if self.functions.contains_key(name) {
+        if self.functions.contains_key(*name) {
             self.fatal(&format!("Function '{}' is already defined", name), node);
         }
 
@@ -252,7 +258,7 @@ impl<'a> Compilation<'a> {
             .map(|p| p.get_var_name().unwrap())
             .collect::<Vec<_>>();
         self.functions
-            .insert(name.clone(), (fn_start_ip, param_names, Vec::new()));
+            .insert(*name, (fn_start_ip, param_names, Vec::new()));
 
         self.block_start(body, Some(node), false);
 
@@ -271,7 +277,7 @@ impl<'a> Compilation<'a> {
             .local_names
             .clone();
         let locals_count = local_names.len() as u32;
-        self.functions.get_mut(name).unwrap().2 = local_names;
+        self.functions.get_mut(*name).unwrap().2 = local_names;
 
         // Recursive calls may not have the correct number of locals yet, so update them.
         let end_ip = self.cur_inst_ptr();
@@ -333,7 +339,7 @@ impl<'a> Compilation<'a> {
 
         self.compile_function_args(args);
 
-        if let Some((_, func_index, args_req)) = self.builtins.get(name).cloned() {
+        if let Some((_, func_index, args_req)) = self.builtins.get(*name).cloned() {
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
             }
@@ -342,7 +348,7 @@ impl<'a> Compilation<'a> {
                 Inst::CallBuiltin(func_index as u32, args.len() as u32),
                 node,
             );
-        } else if let Some((fn_start_ip, decl_args, locals)) = self.functions.get(name) {
+        } else if let Some((fn_start_ip, decl_args, locals)) = self.functions.get(*name) {
             let args_req = ArgsRequred::Exact(decl_args.len() as u32);
             if !args_req.matches(args.len()) {
                 unexpected_args!(args_req);
@@ -529,7 +535,12 @@ impl<'a> Compilation<'a> {
         self.push_instruction(Inst::Pop, node);
     }
 
-    fn block_start(&mut self, node: &'a AstNode<'a>, fn_node: Option<&'a AstNode<'a>>, is_loop: bool) {
+    fn block_start(
+        &mut self,
+        node: &'a AstNode<'a>,
+        fn_node: Option<&'a AstNode<'a>>,
+        is_loop: bool,
+    ) {
         let AstNodeKind::Block(_) = &node.kind else {
             self.fatal("Expected block node", node);
         };
@@ -618,7 +629,11 @@ impl<'a> Compilation<'a> {
 }
 
 #[allow(dead_code)]
-pub fn compile<'a>(block: &'a AstNode<'a>, source: &'a str, tokens: &'a [Token]) -> Compilation<'a> {
+pub fn compile<'a>(
+    block: &'a AstNode<'a>,
+    source: &'a str,
+    tokens: &'a [Token<'a>],
+) -> Compilation<'a> {
     let mut c = Compilation::new(source, tokens);
     c.compile_block_full(block);
     debug!("Compilation finished. Generated instructions:");

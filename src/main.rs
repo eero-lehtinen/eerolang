@@ -73,12 +73,13 @@ fn main() {
         }
     };
 
+    let bump = Bump::new();
+
     let tok_start = Instant::now();
-    let tokens = tokenizer::tokenize(&source_code, cli.tokens);
+    let tokens = tokenizer::tokenize(&bump, &source_code, cli.tokens);
     let tok_end = Instant::now();
 
     let parse_start = Instant::now();
-    let bump = Bump::new();
     let block = ast_parser::parse(&bump, &source_code, &tokens);
     let parse_end = Instant::now();
 

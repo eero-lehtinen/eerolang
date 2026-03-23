@@ -4,11 +4,11 @@ use foldhash::HashMap;
 use log::{info, trace};
 
 use crate::{
-    ast_parser::{fatal_with_stack, CallLocation},
-    builtins::{builtin_get, ProgramFn},
-    compiler::{binary_op_err, Compilation},
+    ast_parser::{CallLocation, fatal_with_stack},
+    builtins::{ProgramFn, builtin_get},
+    compiler::{Compilation, binary_op_err},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
-    tokenizer::{find_source_char_col, report_source_pos, Operator, Token, TokenKind},
+    tokenizer::{Operator, Token, TokenKind, find_source_char_col, report_source_pos},
     value::{Map, Value, ValueRef},
 };
 
@@ -22,7 +22,7 @@ pub struct Vm<'a> {
     instructions: Vec<Inst>,
     ip_to_token: Vec<usize>,
     source: &'a str,
-    tokens: &'a [Token],
+    tokens: &'a [Token<'a>],
     inst_ptr: usize,
     stack: Vec<Value>,
     frame_ptr: usize,
@@ -48,7 +48,7 @@ impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
         let mut builtins = vec![(placeholder_func as ProgramFn, String::new()); ctx.builtins.len()];
         for (name, (func, index, _)) in ctx.builtins.iter() {
-            builtins[*index] = (*func, name.clone());
+            builtins[*index] = (*func, name.to_string());
         }
 
         let functions = ctx
@@ -57,7 +57,7 @@ impl<'a> Vm<'a> {
             .map(|(name, (ip, param_names, local_names))| {
                 (
                     *ip,
-                    (name.clone(), param_names.clone(), local_names.clone()),
+                    (name.to_string(), param_names.clone(), local_names.clone()),
                 )
             })
             .collect();
@@ -456,8 +456,7 @@ impl<'a> Vm<'a> {
                 Inst::CallBuiltin(index, args) => {
                     trace!(
                         "Call builtin function {} with {} args",
-                        self.builtins[index as usize].1,
-                        args
+                        self.builtins[index as usize].1, args
                     );
                     debug_assert!((index as usize) < self.builtins.len());
                     // SAFETY: non-existent functions should be hard to call
@@ -513,10 +512,7 @@ impl<'a> Vm<'a> {
                         let (fn_name, _, _) = self.functions.get(&fn_ip).unwrap();
                         trace!(
                             "Return to IP {}, restored frame ptr {} from function '{}' at {}",
-                            return_ip,
-                            frame_ptr,
-                            fn_name,
-                            fn_ip
+                            return_ip, frame_ptr, fn_name, fn_ip
                         );
                     }
 

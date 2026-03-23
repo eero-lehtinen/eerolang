@@ -4,16 +4,16 @@ use bumpalo::Bump;
 use colored::Colorize;
 use log::trace;
 
-use crate::tokenizer::{Literal, Operator, Token, TokenKind, find_source_char_col, report_source_pos};
-
-type VarName = String;
+use crate::tokenizer::{
+    Literal, Operator, Token, TokenKind, find_source_char_col, report_source_pos,
+};
 
 /// Bundles shared state needed throughout the parser: the bump allocator,
 /// the source text, and the full token list (for error reporting).
 pub struct ParseCtx<'b> {
     pub bump: &'b Bump,
     pub source: &'b str,
-    pub tokens: &'b [Token],
+    pub tokens: &'b [Token<'b>],
 }
 
 fn fatal_at_last_token(ctx: &ParseCtx, msg: &str) -> ! {
@@ -27,16 +27,20 @@ fn fatal_at_last_token(ctx: &ParseCtx, msg: &str) -> ! {
     }
 }
 
-fn expect_next<'a, I: TokIter<'a>>(ctx: &ParseCtx, iter: &mut Peekable<I>, msg: &str) -> &'a Token {
+fn expect_next<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx,
+    iter: &mut Peekable<I>,
+    msg: &str,
+) -> &'b Token<'b> {
     iter.next().unwrap_or_else(|| fatal_at_last_token(ctx, msg))
 }
 
-fn expect_next_token<'a, I: TokIter<'a>>(
+fn expect_next_token<'b, I: TokIter<'b>>(
     ctx: &ParseCtx,
     iter: &mut Peekable<I>,
     expected: TokenKind,
     msg: &str,
-) -> &'a Token {
+) -> &'b Token<'b> {
     let token = expect_next(ctx, iter, msg);
     if token.kind != expected {
         fatal(ctx, &format!("Expected token '{}'", expected), token);
@@ -44,7 +48,11 @@ fn expect_next_token<'a, I: TokIter<'a>>(
     token
 }
 
-fn expect_peek<'a, I: TokIter<'a>>(ctx: &ParseCtx, iter: &mut Peekable<I>, msg: &str) -> &'a Token {
+fn expect_peek<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx,
+    iter: &mut Peekable<I>,
+    msg: &str,
+) -> &'b Token<'b> {
     iter.peek()
         .copied()
         .unwrap_or_else(|| fatal_at_last_token(ctx, msg))
@@ -53,20 +61,20 @@ fn expect_peek<'a, I: TokIter<'a>>(ctx: &ParseCtx, iter: &mut Peekable<I>, msg: 
 #[derive(Debug)]
 pub enum AstNodeKind<'a> {
     DeclareAssign {
-        name: VarName,
+        name: &'a str,
         expr: &'a AstNode<'a>,
     },
     Assign {
-        name: VarName,
+        name: &'a str,
         expr: &'a AstNode<'a>,
     },
     /// name, arguments
     FunctionCall {
-        name: VarName,
+        name: &'a str,
         args: &'a [AstNode<'a>],
     },
     FunctionDefinition {
-        name: VarName,
+        name: &'a str,
         params: &'a [AstNode<'a>],
         body: &'a AstNode<'a>,
     },
@@ -83,7 +91,7 @@ pub enum AstNodeKind<'a> {
         condition: &'a AstNode<'a>,
         body: &'a AstNode<'a>,
     },
-    Declaration(VarName),
+    Declaration(&'a str),
     Continue,
     Break,
     IfStatement {
@@ -97,8 +105,8 @@ pub enum AstNodeKind<'a> {
         right: &'a AstNode<'a>,
     },
     Block(&'a [AstNode<'a>]),
-    Literal(Literal),
-    Variable(VarName),
+    Literal(Literal<'a>),
+    Variable(&'a str),
     /// target[key] - subscript read
     Subscript {
         target: &'a AstNode<'a>,
@@ -119,8 +127,8 @@ pub struct AstNode<'a> {
 }
 
 impl<'a> AstNode<'a> {
-    pub fn get_var_name(&self) -> Option<&str> {
-        match &self.kind {
+    pub fn get_var_name(&self) -> Option<&'a str> {
+        match self.kind {
             AstNodeKind::DeclareAssign { name, .. }
             | AstNodeKind::Assign { name, .. }
             | AstNodeKind::Variable(name)
@@ -130,16 +138,16 @@ impl<'a> AstNode<'a> {
     }
 }
 
-trait TokIter<'a>: Iterator<Item = &'a Token> + Clone {}
-impl<'a, T: Iterator<Item = &'a Token> + Clone> TokIter<'a> for T {}
+trait TokIter<'a>: Iterator<Item = &'a Token<'a>> + Clone {}
+impl<'a, T: Iterator<Item = &'a Token<'a>> + Clone> TokIter<'a> for T {}
 
-fn parse_list<'a, 'b, I: TokIter<'a>>(
+fn parse_list<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     iter: &mut Peekable<I>,
     separator: TokenKind,
     end_token: TokenKind,
     eof_msg: &str,
-    mut collect_fn: impl FnMut(&'a Token, AstNode<'b>),
+    mut collect_fn: impl FnMut(&'b Token<'b>, AstNode<'b>),
 ) {
     loop {
         let next = iter.peek();
@@ -149,8 +157,8 @@ fn parse_list<'a, 'b, I: TokIter<'a>>(
         }
 
         let tok = expect_peek(ctx, iter, eof_msg);
-        let element =
-            parse_expression(ctx, iter).unwrap_or_else(|| fatal(ctx, "Expected expression in list", tok));
+        let element = parse_expression(ctx, iter)
+            .unwrap_or_else(|| fatal(ctx, "Expected expression in list", tok));
         collect_fn(tok, element);
         let next = iter.peek();
         if next.is_some_and(|t| t.kind == separator) {
@@ -172,10 +180,10 @@ fn parse_list<'a, 'b, I: TokIter<'a>>(
     }
 }
 
-fn parse_function_call<'a, 'b, I: TokIter<'a>>(
+fn parse_function_call<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     ident_token_idx: usize,
-    ident: &str,
+    ident: &'b str,
     iter: &mut Peekable<I>,
 ) -> Option<AstNode<'b>> {
     let lparen_token = iter.peek();
@@ -197,13 +205,13 @@ fn parse_function_call<'a, 'b, I: TokIter<'a>>(
     Some(AstNode {
         token_idx: ident_token_idx,
         kind: AstNodeKind::FunctionCall {
-            name: ident.into(),
+            name: ident,
             args: ctx.bump.alloc_slice_fill_iter(args),
         },
     })
 }
 
-fn parse_block<'a, 'b, I: TokIter<'a>>(
+fn parse_block<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     iter: &mut Peekable<I>,
     top_level: bool,
@@ -211,8 +219,12 @@ fn parse_block<'a, 'b, I: TokIter<'a>>(
     in_function: bool,
 ) -> &'b AstNode<'b> {
     let token_idx = if !top_level {
-        let lbrace_token =
-            expect_next_token(ctx, iter, TokenKind::LBrace, "Expected '{' at start of block");
+        let lbrace_token = expect_next_token(
+            ctx,
+            iter,
+            TokenKind::LBrace,
+            "Expected '{' at start of block",
+        );
         lbrace_token.index
     } else {
         0
@@ -243,18 +255,26 @@ fn parse_block<'a, 'b, I: TokIter<'a>>(
     })
 }
 
-fn parse_function_definition<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekable<I>) -> AstNode<'b> {
+fn parse_function_definition<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx<'b>,
+    iter: &mut Peekable<I>,
+) -> AstNode<'b> {
     let fn_token = expect_next_token(ctx, iter, TokenKind::KeywordFn, "Expected 'fn' keyword");
     trace!("Parsing function definition, fn token: {:?}", fn_token);
     let token_idx = fn_token.index;
 
     let name_token = expect_next(ctx, iter, "Expected function name after 'fn'");
-    let TokenKind::Ident(func_name) = &name_token.kind else {
+    let TokenKind::Ident(func_name) = name_token.kind else {
         fatal(ctx, "Expected function name after 'fn'", name_token);
     };
     trace!("Parsing function definition, name: {}", func_name);
 
-    expect_next_token(ctx, iter, TokenKind::LParen, "Expected '(' after function name");
+    expect_next_token(
+        ctx,
+        iter,
+        TokenKind::LParen,
+        "Expected '(' after function name",
+    );
 
     let mut params = Vec::new();
     parse_list(
@@ -285,22 +305,26 @@ fn parse_function_definition<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &
     AstNode {
         token_idx,
         kind: AstNodeKind::FunctionDefinition {
-            name: func_name.clone(),
+            name: func_name,
             params: ctx.bump.alloc_slice_fill_iter(params),
             body,
         },
     }
 }
 
-fn parse_for_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekable<I>, in_function: bool) -> AstNode<'b> {
+fn parse_for_loop<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx<'b>,
+    iter: &mut Peekable<I>,
+    in_function: bool,
+) -> AstNode<'b> {
     let for_token = expect_next_token(ctx, iter, TokenKind::KeywordFor, "Expected 'for' keyword");
     trace!("Parsing for loop, for token: {:?}", for_token);
     let token_idx = for_token.index;
 
-    let key_token = expect_next(ctx, iter, "Expected loop variable after 'for'").clone();
+    let key_token = expect_next(ctx, iter, "Expected loop variable after 'for'");
     trace!("Parsing for loop, first token: {:?}", key_token);
-    let TokenKind::Ident(key_var) = key_token.kind.clone() else {
-        fatal(ctx, "Expected identifier after 'for'", &key_token);
+    let TokenKind::Ident(key_var) = key_token.kind else {
+        fatal(ctx, "Expected identifier after 'for'", key_token);
     };
     let key = if key_var != "_" {
         Some(ctx.bump.alloc(AstNode {
@@ -316,7 +340,7 @@ fn parse_for_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekabl
     let item = if next_token.kind == TokenKind::Comma {
         let item_token = expect_next(ctx, iter, "Expected identifier after ','");
         trace!("Parsing for loop, item variable token: {:?}", item_token);
-        let TokenKind::Ident(item_var) = &item_token.kind else {
+        let TokenKind::Ident(item_var) = item_token.kind else {
             fatal(ctx, "Expected identifier after ','", item_token);
         };
         next_token = expect_next(ctx, iter, "Expected 'in' keyword");
@@ -325,7 +349,7 @@ fn parse_for_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekabl
         } else {
             Some(ctx.bump.alloc(AstNode {
                 token_idx: item_token.index,
-                kind: AstNodeKind::Declaration(item_var.clone()),
+                kind: AstNodeKind::Declaration(item_var),
             }) as &_)
         }
     } else {
@@ -333,11 +357,19 @@ fn parse_for_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekabl
     };
 
     if next_token.kind != TokenKind::KeywordIn {
-        fatal(ctx, "Expected 'in' after item variable in for loop", next_token);
+        fatal(
+            ctx,
+            "Expected 'in' after item variable in for loop",
+            next_token,
+        );
     }
     let collection_expr = parse_expression(ctx, iter).unwrap_or_else(|| {
         let tok = expect_peek(ctx, iter, "Expected collection expression after 'in'");
-        fatal(ctx, "Expected collection expression after 'in' in for loop", tok);
+        fatal(
+            ctx,
+            "Expected collection expression after 'in' in for loop",
+            tok,
+        );
     });
     trace!(
         "Parsing for loop, collection expression: {:?}",
@@ -357,8 +389,17 @@ fn parse_for_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekabl
     }
 }
 
-fn parse_while_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekable<I>, in_function: bool) -> AstNode<'b> {
-    let while_token = expect_next_token(ctx, iter, TokenKind::KeywordWhile, "Expected 'while' keyword");
+fn parse_while_loop<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx<'b>,
+    iter: &mut Peekable<I>,
+    in_function: bool,
+) -> AstNode<'b> {
+    let while_token = expect_next_token(
+        ctx,
+        iter,
+        TokenKind::KeywordWhile,
+        "Expected 'while' keyword",
+    );
     trace!("Parsing while loop, while token: {:?}", while_token);
     let token_idx = while_token.index;
 
@@ -378,7 +419,7 @@ fn parse_while_loop<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peeka
     }
 }
 
-fn parse_if_statement<'a, 'b, I: TokIter<'a>>(
+fn parse_if_statement<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     iter: &mut Peekable<I>,
     in_loop: bool,
@@ -411,7 +452,10 @@ fn parse_if_statement<'a, 'b, I: TokIter<'a>>(
     }
 }
 
-fn parse_primary_expression<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekable<I>) -> Option<AstNode<'b>> {
+fn parse_primary_expression<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx<'b>,
+    iter: &mut Peekable<I>,
+) -> Option<AstNode<'b>> {
     let token = iter.peek()?;
     let token_idx = token.index;
 
@@ -442,10 +486,10 @@ fn parse_primary_expression<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &m
             }
         }
         TokenKind::Ident(ident) => {
+            let ident = *ident;
             let ident_token_idx = iter.next().unwrap().index;
-            let ident = ident.clone();
             trace!("Parsing identifier: {}", ident);
-            if let Some(fcall) = parse_function_call(ctx, ident_token_idx, &ident, iter) {
+            if let Some(fcall) = parse_function_call(ctx, ident_token_idx, ident, iter) {
                 fcall
             } else {
                 AstNode {
@@ -493,13 +537,16 @@ fn parse_primary_expression<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &m
     Some(atom)
 }
 
-fn parse_expression<'a, 'b, I: TokIter<'a>>(ctx: &ParseCtx<'b>, iter: &mut Peekable<I>) -> Option<AstNode<'b>> {
+fn parse_expression<'b, I: TokIter<'b>>(
+    ctx: &ParseCtx<'b>,
+    iter: &mut Peekable<I>,
+) -> Option<AstNode<'b>> {
     let left = parse_primary_expression(ctx, iter)?;
     trace!("Parsed primary expression: {:?}", left);
     parse_expression_impl(ctx, iter, left, 0)
 }
 
-fn parse_expression_impl<'a, 'b, I: TokIter<'a>>(
+fn parse_expression_impl<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     iter: &mut Peekable<I>,
     mut left: AstNode<'b>,
@@ -527,8 +574,8 @@ fn parse_expression_impl<'a, 'b, I: TokIter<'a>>(
             && let TokenKind::Operator(next_op) = next_tok.kind
         {
             if next_op.precedence() > op.precedence() {
-                right =
-                    parse_expression_impl(ctx, iter, right, next_op.precedence()).unwrap_or_else(|| {
+                right = parse_expression_impl(ctx, iter, right, next_op.precedence())
+                    .unwrap_or_else(|| {
                         let err_tok = expect_peek(ctx, iter, "Expected expression after operator");
                         fatal(ctx, "Expected expression after operator", err_tok);
                     });
@@ -554,7 +601,7 @@ fn parse_expression_impl<'a, 'b, I: TokIter<'a>>(
     Some(left)
 }
 
-fn parse_statement<'a, 'b, I: TokIter<'a>>(
+fn parse_statement<'b, I: TokIter<'b>>(
     ctx: &ParseCtx<'b>,
     iter: &mut Peekable<I>,
     top_level: bool,
@@ -565,9 +612,9 @@ fn parse_statement<'a, 'b, I: TokIter<'a>>(
 
     let statement = match &token.kind {
         TokenKind::Ident(ident) => {
+            let ident = *ident;
             let ident_token = iter.next();
             let ident_token_idx = ident_token.unwrap().index;
-            let ident = ident.clone();
 
             match iter.peek().map(|t| &t.kind) {
                 Some(TokenKind::DeclareAssign) => {
@@ -656,12 +703,16 @@ fn parse_statement<'a, 'b, I: TokIter<'a>>(
                         }
                     } else {
                         let tok = expect_peek(ctx, iter, "Expected '=' after subscript expression");
-                        fatal(ctx, "Expected '=' after subscript expression in statement", tok);
+                        fatal(
+                            ctx,
+                            "Expected '=' after subscript expression in statement",
+                            tok,
+                        );
                     }
                 }
                 _ => {
                     trace!("Parsing function call starting with identifier {}", ident);
-                    parse_function_call(ctx, ident_token_idx, &ident, iter).unwrap_or_else(|| {
+                    parse_function_call(ctx, ident_token_idx, ident, iter).unwrap_or_else(|| {
                         let tok = expect_peek(
                             ctx,
                             iter,
@@ -708,11 +759,23 @@ fn parse_statement<'a, 'b, I: TokIter<'a>>(
     Some(statement)
 }
 
-fn fatal(ctx: &ParseCtx, msg: &str, token: &Token) -> ! {
-    fatal_generic(ctx.source, ctx.tokens, msg, "Parsing terminated due to previous error.", token);
+fn fatal(ctx: &ParseCtx, msg: &str, token: &Token<'_>) -> ! {
+    fatal_generic(
+        ctx.source,
+        ctx.tokens,
+        msg,
+        "Parsing terminated due to previous error.",
+        token,
+    );
 }
 
-pub fn fatal_generic(source: &str, tokens: &[Token], msg: &str, end_msg: &str, token: &Token) -> ! {
+pub fn fatal_generic(
+    source: &str,
+    tokens: &[Token<'_>],
+    msg: &str,
+    end_msg: &str,
+    token: &Token<'_>,
+) -> ! {
     fatal_with_stack(source, tokens, msg, end_msg, token, &[]);
 }
 
@@ -723,7 +786,14 @@ pub struct CallLocation<'a> {
 }
 
 /// `call_stack` should be in order from innermost to outermost.
-pub fn fatal_with_stack(source: &str, tokens: &[Token], msg: &str, end_msg: &str, token: &Token, call_stack: &[CallLocation]) -> ! {
+pub fn fatal_with_stack(
+    source: &str,
+    tokens: &[Token<'_>],
+    msg: &str,
+    end_msg: &str,
+    token: &Token<'_>,
+    call_stack: &[CallLocation],
+) -> ! {
     let char_col = find_source_char_col(source, token.line, token.byte_col);
 
     eprintln!(
@@ -759,7 +829,7 @@ pub fn fatal_with_stack(source: &str, tokens: &[Token], msg: &str, end_msg: &str
                 eprintln!(
                     "  {}: {} at line {}",
                     i,
-                    loc.function_name.color(TokenKind::Ident("".into()).color()),
+                    loc.function_name.color(TokenKind::Ident("").color()),
                     loc.line + 1,
                 );
             } else if i == MAX_TOP {
@@ -772,8 +842,12 @@ pub fn fatal_with_stack(source: &str, tokens: &[Token], msg: &str, end_msg: &str
     std::process::exit(1);
 }
 
-pub fn parse<'b>(bump: &'b Bump, source: &'b str, tokens: &'b [Token]) -> &'b AstNode<'b> {
-    let ctx = ParseCtx { bump, source, tokens };
+pub fn parse<'b>(bump: &'b Bump, source: &'b str, tokens: &'b [Token<'b>]) -> &'b AstNode<'b> {
+    let ctx = ParseCtx {
+        bump,
+        source,
+        tokens,
+    };
 
     let mut iter = tokens
         .iter()
