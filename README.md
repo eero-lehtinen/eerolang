@@ -176,11 +176,10 @@ print("Script arguments:", args)
 
 ## Performance notes
 
-Eerolang is not optimized for performance as it is about as slow as Python (not including startup time, which is almost instant with Eerolang). All types are heap allocated and reference counted by default, except from small integers (SMIs), which are implemented as tagged pointers the same as V8. A lot of extra instructions are generated as there are no optimization passes.
+Eerolang is not optimized for performance as it is about as slow as Python (not including startup time, which is almost instant with Eerolang). All types are heap allocated and garbage collected by default, except from small integers (SMIs), which are implemented as tagged pointers the same as V8. A lot of extra instructions are generated as there are no optimization passes.
 
 ### Performance improvements that are out of scope considering the purposes of the language:
 
-- Garbage collection to replace reference counting
 - Interning for strings
 - String slices instead of copies
 - Optimization passes (might require more intermediate representations between AST and bytecode)
