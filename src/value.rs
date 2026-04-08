@@ -1,21 +1,25 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
-use std::mem;
-use std::rc::Rc;
+use std::mem::{self, ManuallyDrop};
 
 use std::hash::Hash;
 
+use dumpster::unsync::Gc;
+use dumpster::{Trace, TraceWith, Visitor};
 use foldhash::HashMap;
 
-/// A tagged pointer that holds either an Rc<T> or a small integer.
+/// A tagged pointer that holds either a Gc<T> or a small integer.
 ///
 /// We use the Least Significant Bit (LSB) as the tag:
 /// 0 = Pointer
 /// 1 = Integer
 pub struct Value {
-    bits: usize,
-    _marker: PhantomData<Rc<ValueInner>>,
+    /// Holds either a tagged SMI (LSB=1), null (0), or a transmuted Gc<ValueInner>.
+    /// Cell is required so that dumpster's rehydration visitor can null out the Gc
+    /// pointer through the shared `&self` reference in `TraceWith::accept`.
+    bits: Cell<usize>,
+    _marker: PhantomData<Gc<ValueInner>>,
 }
 
 unsafe impl Send for Value {}
@@ -31,6 +35,7 @@ pub enum ValueRef<'a> {
     Map(&'a RefCell<Map>),
 }
 
+#[derive(Trace)]
 pub enum ValueInner {
     Float(f64),
     Range(Range),
@@ -38,6 +43,18 @@ pub enum ValueInner {
     List(RefCell<Vec<Value>>),
     Queue(RefCell<VecDeque<Value>>),
     Map(RefCell<Map>),
+}
+
+#[cfg(test)]
+thread_local! {
+    pub static VALUE_INNER_DROP_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Drop for ValueInner {
+    fn drop(&mut self) {
+        VALUE_INNER_DROP_COUNT.with(|c| c.set(c.get() + 1));
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,34 +80,28 @@ impl Value {
         let bits = (val_usize << 32) | Self::INT_FLAG;
 
         Self {
-            bits,
+            bits: Cell::new(bits),
             _marker: PhantomData,
         }
     }
 
     pub const fn null() -> Self {
         Self {
-            bits: 0,
+            bits: Cell::new(0),
             _marker: PhantomData,
         }
     }
 
-    pub fn rc(rc: Rc<ValueInner>) -> Self {
-        debug_assert!(
-            mem::align_of::<ValueInner>() > 1,
-            "Type T must have alignment > 1"
-        );
-
-        let ptr = Rc::into_raw(rc);
-        let bits = ptr as usize;
+    pub fn rc(gc: Gc<ValueInner>) -> Self {
+        let bits = unsafe { mem::transmute::<Gc<ValueInner>, usize>(gc) };
 
         debug_assert!(
             bits & Self::TAG_MASK == 0,
-            "Pointer was not properly aligned"
+            "GC pointer was not properly aligned"
         );
 
         Self {
-            bits,
+            bits: Cell::new(bits),
             _marker: PhantomData,
         }
     }
@@ -104,7 +115,7 @@ impl Value {
     }
 
     pub fn float(val: f64) -> Self {
-        Self::rc(Rc::new(ValueInner::Float(val)))
+        Self::rc(Gc::new(ValueInner::Float(val)))
     }
 
     pub fn int(val: i64) -> Self {
@@ -116,19 +127,19 @@ impl Value {
     }
 
     pub fn range(start: i64, end: i64) -> Self {
-        Self::rc(Rc::new(ValueInner::Range(Range { start, end })))
+        Self::rc(Gc::new(ValueInner::Range(Range { start, end })))
     }
 
     pub fn string(val: String) -> Self {
-        Self::rc(Rc::new(ValueInner::String(val)))
+        Self::rc(Gc::new(ValueInner::String(val)))
     }
 
     pub fn list(val: Vec<Value>) -> Self {
-        Self::rc(Rc::new(ValueInner::List(RefCell::new(val))))
+        Self::rc(Gc::new(ValueInner::List(RefCell::new(val))))
     }
 
     pub fn queue(val: VecDeque<Value>) -> Self {
-        Self::rc(Rc::new(ValueInner::Queue(RefCell::new(val))))
+        Self::rc(Gc::new(ValueInner::Queue(RefCell::new(val))))
     }
 
     pub fn bool(val: bool) -> Self {
@@ -136,17 +147,17 @@ impl Value {
     }
 
     pub fn map(val: HashMap<Value, Value>) -> Self {
-        Self::rc(Rc::new(ValueInner::Map(RefCell::new(Map {
+        Self::rc(Gc::new(ValueInner::Map(RefCell::new(Map {
             inner: val,
             iter_keys: Vec::new(),
         }))))
     }
 
     pub fn is_smi(&self) -> bool {
-        (self.bits & Self::TAG_MASK) == Self::INT_FLAG
+        (self.bits.get() & Self::TAG_MASK) == Self::INT_FLAG
     }
 
-    pub fn is_rc(&self) -> bool {
+    pub fn is_gc(&self) -> bool {
         !self.is_null() && !self.is_smi()
     }
 
@@ -155,7 +166,7 @@ impl Value {
     }
 
     pub fn is_null(&self) -> bool {
-        self.bits == 0
+        self.bits.get() == 0
     }
 
     pub fn as_int(&self) -> Option<i64> {
@@ -176,12 +187,15 @@ impl Value {
 
     pub fn as_value_ref(&self) -> ValueRef<'_> {
         if self.is_smi() {
-            ValueRef::Smi((self.bits >> 32) as i32)
+            ValueRef::Smi((self.bits.get() >> 32) as i32)
+        } else if self.is_null() {
+            ValueRef::Null
         } else {
-            if self.is_null() {
-                return ValueRef::Null;
-            }
-            let ptr = self.bits as *const ValueInner;
+            let gc = ManuallyDrop::new(unsafe {
+                mem::transmute::<usize, Gc<ValueInner>>(self.bits.get())
+            });
+            // Safety: data lives as long as self (we hold a GC reference via bits)
+            let ptr: *const ValueInner = &**gc;
             unsafe {
                 match &*ptr {
                     ValueInner::Float(f) => ValueRef::Float(*f),
@@ -351,6 +365,42 @@ impl PartialEq for Value {
 
 impl Eq for Value {}
 
+unsafe impl<V: Visitor> TraceWith<V> for Value {
+    fn accept(&self, visitor: &mut V) -> Result<(), ()> {
+        if self.is_gc() {
+            // Reconstruct a Gc on the stack from our bits.
+            // The visitor may null it out during dumpster's rehydration phase.
+            let gc: Gc<ValueInner> =
+                unsafe { mem::transmute::<usize, Gc<ValueInner>>(self.bits.get()) };
+            visitor.visit_unsync(&gc);
+            // Write back the (possibly nulled) bits so Drop won't use-after-free.
+            let new_bits: usize = unsafe { mem::transmute_copy(&gc) };
+            self.bits.set(new_bits);
+            mem::forget(gc);
+        }
+        Ok(())
+    }
+}
+
+unsafe impl<V: Visitor> TraceWith<V> for Map {
+    fn accept(&self, visitor: &mut V) -> Result<(), ()> {
+        for (k, v) in &self.inner {
+            k.accept(visitor)?;
+            v.accept(visitor)?;
+        }
+        for k in &self.iter_keys {
+            k.accept(visitor)?;
+        }
+        Ok(())
+    }
+}
+
+unsafe impl<V: Visitor> TraceWith<V> for Range {
+    fn accept(&self, _visitor: &mut V) -> Result<(), ()> {
+        Ok(())
+    }
+}
+
 impl Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self.as_value_ref() {
@@ -372,10 +422,9 @@ impl Default for Value {
 
 impl Drop for Value {
     fn drop(&mut self) {
-        if self.is_rc() {
-            let ptr = self.bits as *const ValueInner;
+        if self.is_gc() {
             unsafe {
-                let _ = Rc::from_raw(ptr);
+                let _gc: Gc<ValueInner> = mem::transmute::<usize, Gc<ValueInner>>(self.bits.get());
             }
         }
     }
@@ -383,18 +432,19 @@ impl Drop for Value {
 
 impl Clone for Value {
     fn clone(&self) -> Self {
-        if self.is_rc() {
-            let ptr = self.bits as *const ValueInner;
-            unsafe {
-                Rc::increment_strong_count(ptr);
-            }
+        if self.is_gc() {
+            let gc = ManuallyDrop::new(unsafe {
+                mem::transmute::<usize, Gc<ValueInner>>(self.bits.get())
+            });
+            let cloned: Gc<ValueInner> = (*gc).clone();
+            let bits = unsafe { mem::transmute::<Gc<ValueInner>, usize>(cloned) };
             Self {
-                bits: self.bits,
+                bits: Cell::new(bits),
                 _marker: PhantomData,
             }
         } else {
             Self {
-                bits: self.bits,
+                bits: Cell::new(self.bits.get()),
                 _marker: PhantomData,
             }
         }
@@ -530,4 +580,151 @@ pub fn type_display(values: &[Value]) -> String {
         ValueRef::Map(_) => "map",
     };
     values.iter().map(tstr).collect::<Vec<&str>>().join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reset_drop_count() {
+        VALUE_INNER_DROP_COUNT.with(|c| c.set(0));
+    }
+    fn drop_count() -> usize {
+        VALUE_INNER_DROP_COUNT.with(|c| c.get())
+    }
+
+    // Cycle collection through tagged-pointer Values.
+    // These tests assert that ValueInner::drop actually runs, proving
+    // dumpster freed the cycle through our transmute-based representation.
+
+    #[test]
+    fn cycle_self_ref_list_is_freed() {
+        reset_drop_count();
+        {
+            let list = Value::list(vec![]);
+            match list.as_value_ref() {
+                ValueRef::List(l) => l.borrow_mut().push(list.clone()),
+                _ => unreachable!(),
+            }
+            // list -> list  (self-cycle via tagged pointer)
+        }
+        dumpster::unsync::collect();
+        assert_eq!(
+            drop_count(),
+            1,
+            "self-referencing list ValueInner must be freed"
+        );
+    }
+
+    #[test]
+    fn cycle_two_lists_are_freed() {
+        reset_drop_count();
+        {
+            let a = Value::list(vec![]);
+            let b = Value::list(vec![a.clone()]);
+            match a.as_value_ref() {
+                ValueRef::List(l) => l.borrow_mut().push(b.clone()),
+                _ => unreachable!(),
+            }
+            // a -> b -> a  (mutual cycle)
+        }
+        dumpster::unsync::collect();
+        assert_eq!(
+            drop_count(),
+            2,
+            "both list ValueInners in mutual cycle must be freed"
+        );
+    }
+
+    #[test]
+    fn cycle_list_map_is_freed() {
+        reset_drop_count();
+        {
+            let list = Value::list(vec![]);
+            #[allow(clippy::mutable_key_type)]
+            let mut m = HashMap::default();
+            m.insert(Value::string("ref".into()), list.clone());
+            let map = Value::map(m);
+            match list.as_value_ref() {
+                ValueRef::List(l) => l.borrow_mut().push(map.clone()),
+                _ => unreachable!(),
+            }
+            // list -> map -> list  (cycle across Value types)
+        }
+        dumpster::unsync::collect();
+        // list (1) + map (1) + the "ref" string key (1) = 3
+        assert_eq!(
+            drop_count(),
+            3,
+            "list, map, and string key ValueInners in cycle must be freed"
+        );
+    }
+
+    #[test]
+    fn non_cyclic_value_drop_counted() {
+        // Sanity: normal (non-cyclic) GC values also hit the drop counter.
+        reset_drop_count();
+        {
+            let _s = Value::string("hello".into());
+            let _f = Value::float(1.5);
+            let _l = Value::list(vec![Value::smi(1)]);
+        }
+        assert_eq!(
+            drop_count(),
+            3,
+            "non-cyclic ValueInners must be dropped normally"
+        );
+    }
+
+    // Size / layout guarantees
+
+    #[test]
+    fn value_is_pointer_sized() {
+        assert_eq!(mem::size_of::<Value>(), mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn gc_is_pointer_sized() {
+        assert_eq!(mem::size_of::<Gc<ValueInner>>(), mem::size_of::<usize>());
+    }
+
+    // Tagged pointer basics
+
+    #[test]
+    fn smi_tagging() {
+        let v = Value::smi(42);
+        assert!(v.is_smi() && !v.is_gc() && !v.is_null());
+        assert_eq!(v.as_int(), Some(42));
+    }
+
+    #[test]
+    fn null_tagging() {
+        let v = Value::null();
+        assert!(v.is_null() && !v.is_smi() && !v.is_gc());
+    }
+
+    #[test]
+    fn gc_tagging() {
+        let v = Value::float(3.1);
+        assert!(v.is_gc() && !v.is_smi() && !v.is_null());
+        assert_eq!(v.as_number(), Some(3.1));
+    }
+
+    #[test]
+    fn clone_gc_string() {
+        let a = Value::string("world".into());
+        let b = a.clone();
+        match (a.as_value_ref(), b.as_value_ref()) {
+            (ValueRef::String(sa), ValueRef::String(sb)) => assert_eq!(sa, sb),
+            _ => panic!("expected strings"),
+        }
+    }
+
+    #[test]
+    fn equality() {
+        assert_eq!(Value::smi(1), Value::smi(1));
+        assert_ne!(Value::smi(1), Value::smi(2));
+        assert_eq!(Value::null(), Value::null());
+        assert_eq!(Value::string("a".into()), Value::string("a".into()));
+    }
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::mutable_key_type)]
 use crate::vm::Vm;
 use bumpalo::Bump;
 use clap::Parser;
