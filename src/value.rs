@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop};
+use std::ptr;
 
 use std::hash::Hash;
 
@@ -18,7 +19,10 @@ pub struct Value {
     /// Holds either a tagged SMI (LSB=1), null (0), or a transmuted Gc<ValueInner>.
     /// Cell is required so that dumpster's rehydration visitor can null out the Gc
     /// pointer through the shared `&self` reference in `TraceWith::accept`.
-    bits: Cell<usize>,
+    ///
+    /// Stored as `*mut ()` instead of `usize` to preserve pointer provenance,
+    /// which lets Miri verify the correctness of our tagged-pointer scheme.
+    bits: Cell<*mut ()>,
     _marker: PhantomData<Gc<ValueInner>>,
 }
 
@@ -80,28 +84,28 @@ impl Value {
         let bits = (val_usize << 32) | Self::INT_FLAG;
 
         Self {
-            bits: Cell::new(bits),
+            bits: Cell::new(ptr::without_provenance_mut(bits)),
             _marker: PhantomData,
         }
     }
 
     pub const fn null() -> Self {
         Self {
-            bits: Cell::new(0),
+            bits: Cell::new(ptr::null_mut()),
             _marker: PhantomData,
         }
     }
 
     pub fn rc(gc: Gc<ValueInner>) -> Self {
-        let bits = unsafe { mem::transmute::<Gc<ValueInner>, usize>(gc) };
+        let ptr = unsafe { mem::transmute::<Gc<ValueInner>, *mut ()>(gc) };
 
         debug_assert!(
-            bits & Self::TAG_MASK == 0,
+            ptr.addr() & Self::TAG_MASK == 0,
             "GC pointer was not properly aligned"
         );
 
         Self {
-            bits: Cell::new(bits),
+            bits: Cell::new(ptr),
             _marker: PhantomData,
         }
     }
@@ -154,7 +158,7 @@ impl Value {
     }
 
     pub fn is_smi(&self) -> bool {
-        (self.bits.get() & Self::TAG_MASK) == Self::INT_FLAG
+        (self.bits.get().addr() & Self::TAG_MASK) == Self::INT_FLAG
     }
 
     pub fn is_gc(&self) -> bool {
@@ -166,7 +170,7 @@ impl Value {
     }
 
     pub fn is_null(&self) -> bool {
-        self.bits.get() == 0
+        self.bits.get().is_null()
     }
 
     pub fn as_int(&self) -> Option<i64> {
@@ -187,12 +191,12 @@ impl Value {
 
     pub fn as_value_ref(&self) -> ValueRef<'_> {
         if self.is_smi() {
-            ValueRef::Smi((self.bits.get() >> 32) as i32)
+            ValueRef::Smi((self.bits.get().addr() >> 32) as i32)
         } else if self.is_null() {
             ValueRef::Null
         } else {
             let gc = ManuallyDrop::new(unsafe {
-                mem::transmute::<usize, Gc<ValueInner>>(self.bits.get())
+                mem::transmute::<*mut (), Gc<ValueInner>>(self.bits.get())
             });
             // Safety: data lives as long as self (we hold a GC reference via bits)
             let ptr: *const ValueInner = &**gc;
@@ -371,11 +375,11 @@ unsafe impl<V: Visitor> TraceWith<V> for Value {
             // Reconstruct a Gc on the stack from our bits.
             // The visitor may null it out during dumpster's rehydration phase.
             let gc: Gc<ValueInner> =
-                unsafe { mem::transmute::<usize, Gc<ValueInner>>(self.bits.get()) };
+                unsafe { mem::transmute::<*mut (), Gc<ValueInner>>(self.bits.get()) };
             visitor.visit_unsync(&gc);
             // Write back the (possibly nulled) bits so Drop won't use-after-free.
-            let new_bits: usize = unsafe { mem::transmute_copy(&gc) };
-            self.bits.set(new_bits);
+            let new_ptr: *mut () = unsafe { mem::transmute_copy(&gc) };
+            self.bits.set(new_ptr);
             mem::forget(gc);
         }
         Ok(())
@@ -424,7 +428,8 @@ impl Drop for Value {
     fn drop(&mut self) {
         if self.is_gc() {
             unsafe {
-                let _gc: Gc<ValueInner> = mem::transmute::<usize, Gc<ValueInner>>(self.bits.get());
+                let _gc: Gc<ValueInner> =
+                    mem::transmute::<*mut (), Gc<ValueInner>>(self.bits.get());
             }
         }
     }
@@ -434,12 +439,12 @@ impl Clone for Value {
     fn clone(&self) -> Self {
         if self.is_gc() {
             let gc = ManuallyDrop::new(unsafe {
-                mem::transmute::<usize, Gc<ValueInner>>(self.bits.get())
+                mem::transmute::<*mut (), Gc<ValueInner>>(self.bits.get())
             });
             let cloned: Gc<ValueInner> = (*gc).clone();
-            let bits = unsafe { mem::transmute::<Gc<ValueInner>, usize>(cloned) };
+            let ptr = unsafe { mem::transmute::<Gc<ValueInner>, *mut ()>(cloned) };
             Self {
-                bits: Cell::new(bits),
+                bits: Cell::new(ptr),
                 _marker: PhantomData,
             }
         } else {

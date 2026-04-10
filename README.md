@@ -174,6 +174,18 @@ args := args()
 print("Script arguments:", args)
 ```
 
+## Miri
+
+The VM uses `unsafe` for tagged pointers (SMI encoding) and garbage collection via `transmute`, so [Miri](https://github.com/rust-lang/miri) is useful for checking these for undefined behavior:
+
+```sh
+# Run unit tests under Miri
+cargo +nightly miri test
+
+# Run the features sample under Miri (very slow)
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri run -- samples/features.eel
+```
+
 ## Performance notes
 
 Eerolang is not optimized for performance as it is about as slow as Python (not including startup time, which is almost instant with Eerolang). All types are heap allocated and garbage collected by default, except from small integers (SMIs), which are implemented as tagged pointers the same as V8. A lot of extra instructions are generated as there are no optimization passes.
