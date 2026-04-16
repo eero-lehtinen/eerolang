@@ -30,7 +30,7 @@ I couldn't think of a language to try this year for the [Advent of Code 2025](ht
 
 Eerolang is pretty close to Python. It has strong typing, e.g. you can't add a string to a number. It also has dynamic typing, so types are only checked at run time and not when compiling. A list or a map can contain any type in any position.
 
-The types are: `null`, `number`, `string`, `range`, `list`, `queue`, and `map`. There are no user-defined types. There are also no booleans, all types can be falsy (`null`, `0` for numbers, empty strings, lists, maps). If you really want booleans, I guess you can do `true := 1` and `false := 0` at the start of the file.
+The types are: `null`, `number`, `string`, `range`, `list`, `queue`, `map`, and `function`. There are no user-defined types. There are also no booleans, all types can be falsy (`null`, `0` for numbers, empty strings, lists, maps). If you really want booleans, I guess you can do `true := 1` and `false := 0` at the start of the file.
 
 The syntax is a combination of Lua, Go and Rust. Declarations use the walrus operator from Go. For-loops and logical expressions are from Lua. Fn and bracing styles are from Rust. The ad hoc grammar also turned out to not need newlines or semicolons at all. Multiple statements in the same file are perfectly fine as long as they are separated by any whitespace (e.g. `x := 10 print(x)`).
 
@@ -77,6 +77,11 @@ fn fibonacci(x) {
 }
 
 print("Fibonacci of 6 is", fibonacci(6))
+
+# Functions are first-class values (can be stored, passed, and called indirectly)
+fn ascending(a, b) { return a - b }
+cmp := ascending
+print("cmp(3, 1) is", cmp(3, 1))
 
 # Maps (strings as keys and any type as values)
 map := map(list("one", 1), list("two", 2), list("three", 3))

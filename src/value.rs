@@ -37,6 +37,8 @@ pub enum ValueRef<'a> {
     List(&'a RefCell<Vec<Value>>),
     Queue(&'a RefCell<VecDeque<Value>>),
     Map(&'a RefCell<Map>),
+    Function(u32),
+    Builtin(u32),
 }
 
 #[derive(Trace)]
@@ -47,6 +49,8 @@ pub enum ValueInner {
     List(RefCell<Vec<Value>>),
     Queue(RefCell<VecDeque<Value>>),
     Map(RefCell<Map>),
+    Function(u32),
+    Builtin(u32),
 }
 
 #[cfg(test)]
@@ -157,6 +161,14 @@ impl Value {
         }))))
     }
 
+    pub fn function(start_ip: u32) -> Self {
+        Self::rc(Gc::new(ValueInner::Function(start_ip)))
+    }
+
+    pub fn builtin_ref(index: u32) -> Self {
+        Self::rc(Gc::new(ValueInner::Builtin(index)))
+    }
+
     pub fn is_smi(&self) -> bool {
         (self.bits.get().addr() & Self::TAG_MASK) == Self::INT_FLAG
     }
@@ -208,6 +220,8 @@ impl Value {
                     ValueInner::List(lst) => ValueRef::List(lst),
                     ValueInner::Queue(queue) => ValueRef::Queue(queue),
                     ValueInner::Map(map) => ValueRef::Map(map),
+                    ValueInner::Function(ip) => ValueRef::Function(*ip),
+                    ValueInner::Builtin(idx) => ValueRef::Builtin(*idx),
                 }
             }
         }
@@ -246,6 +260,8 @@ impl Value {
             (ValueRef::Float(a), ValueRef::Float(b)) => a == b,
             (ValueRef::Range(a), ValueRef::Range(b)) => a == b,
             (ValueRef::String(a), ValueRef::String(b)) => a == b,
+            (ValueRef::Function(a), ValueRef::Function(b)) => a == b,
+            (ValueRef::Builtin(a), ValueRef::Builtin(b)) => a == b,
             _ => return None,
         };
         Some(res)
@@ -289,6 +305,7 @@ impl Value {
             ValueRef::List(lst) => lst.borrow().is_empty(),
             ValueRef::Queue(queue) => queue.borrow().is_empty(),
             ValueRef::Map(map) => map.borrow().inner.is_empty(),
+            ValueRef::Function(_) | ValueRef::Builtin(_) => false,
         }
     }
 
@@ -509,6 +526,8 @@ impl std::fmt::Debug for Value {
                 }
                 write!(f, "}}")
             }
+            ValueRef::Function(ip) => write!(f, "<fn @{}>", ip),
+            ValueRef::Builtin(idx) => write!(f, "<builtin #{}>", idx),
         }
     }
 }
@@ -568,6 +587,8 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            ValueRef::Function(ip) => write!(f, "fn @{}", ip),
+            ValueRef::Builtin(idx) => write!(f, "builtin #{}", idx),
             _ => unreachable!(),
         }
     }
@@ -583,6 +604,8 @@ pub fn type_display(values: &[Value]) -> String {
         ValueRef::List(_) => "list",
         ValueRef::Queue(_) => "queue",
         ValueRef::Map(_) => "map",
+        ValueRef::Function(_) => "function",
+        ValueRef::Builtin(_) => "builtin",
     };
     values.iter().map(tstr).collect::<Vec<&str>>().join(", ")
 }

@@ -181,6 +181,12 @@ fn print_inner(item: &Value, depth: u32, w: &mut Stdout) {
             }
             write!(w, "}}").unwrap();
         }
+        ValueRef::Function(ip) => {
+            write!(w, "<fn @{}>", ip).unwrap();
+        }
+        ValueRef::Builtin(idx) => {
+            write!(w, "<builtin #{}>", idx).unwrap();
+        }
     };
 }
 
@@ -338,6 +344,8 @@ fn write_str(w: &mut impl Write, value: &Value) {
             }
         }
         ValueRef::Range(r) => write!(w, "{}-{}", r.start, r.end).unwrap(),
+        ValueRef::Function(ip) => write!(w, "<fn @{}>", ip).unwrap(),
+        ValueRef::Builtin(idx) => write!(w, "<builtin #{}>", idx).unwrap(),
     }
 }
 

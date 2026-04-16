@@ -80,6 +80,8 @@ pub enum Inst {
     CallBuiltin(u32, u32),
     // target instruction pointer, locals count
     Call(u32, u32),
+    // arg count, callable is taken from top of the stack (args are below it)
+    CallValue(u32),
     // args count
     Return(u32),
     Jump(u32),
@@ -172,6 +174,7 @@ impl Display for Inst {
             Inst::Call(func_index, arg_count) => {
                 write!(f, "CALL {} {}", func_index, arg_count)
             }
+            Inst::CallValue(arg_count) => write!(f, "CALL_VALUE {}", arg_count),
             Inst::Return(arg_count) => write!(f, "RETURN {}", arg_count),
             Inst::Jump(target) => write!(f, "JUMP {}", target),
             Inst::JumpIfNull(target) => write!(f, "JUMP_IF_NULL {}", target),

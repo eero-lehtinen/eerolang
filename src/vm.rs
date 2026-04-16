@@ -5,7 +5,7 @@ use log::{info, trace};
 
 use crate::{
     ast_parser::{CallLocation, fatal_with_stack},
-    builtins::{ProgramFn, builtin_get},
+    builtins::{ArgsRequred, ProgramFn, builtin_get},
     compiler::{Compilation, binary_op_err},
     instructions::{ConstAddr, GlobalAddr, Inst, LocalAddr},
     tokenizer::{Operator, SourcePos, Token, TokenKind, find_source_char_col, report_source},
@@ -30,7 +30,7 @@ pub struct Vm<'a> {
     globals: Vec<Value>,
     global_names: Vec<&'a str>,
     constants: Vec<Value>,
-    builtins: Vec<(ProgramFn, &'a str)>,
+    builtins: Vec<(ProgramFn, &'a str, ArgsRequred)>,
     /// Maps ip to (function name, parameter names, local variable names)
     functions: HashMap<u32, (&'a str, Vec<&'a str>, Vec<&'a str>)>,
     /// (frame_ptr, return_ip, function_ip)
@@ -46,9 +46,10 @@ fn placeholder_func(_: &[Value]) -> Result<Value, String> {
 #[allow(dead_code)]
 impl<'a> Vm<'a> {
     pub fn new(ctx: Compilation<'a>) -> Self {
-        let mut builtins = vec![(placeholder_func as ProgramFn, ""); ctx.builtins.len()];
-        for (name, (func, index, _)) in ctx.builtins.iter() {
-            builtins[*index] = (*func, *name);
+        let mut builtins =
+            vec![(placeholder_func as ProgramFn, "", ArgsRequred::Any); ctx.builtins.len()];
+        for (name, (func, index, args_req)) in ctx.builtins.iter() {
+            builtins[*index] = (*func, *name, *args_req);
         }
 
         let functions = ctx
@@ -489,6 +490,69 @@ impl<'a> Vm<'a> {
                             return_ip,
                             self.frame_ptr
                         );
+                    }
+                }
+                Inst::CallValue(nargs) => {
+                    let callable = self.pop();
+                    match callable.as_value_ref() {
+                        ValueRef::Function(fn_ip) => {
+                            let (fn_name, param_names, nlocals) = match self.functions.get(&fn_ip) {
+                                Some((n, p, l)) => (*n, p.len(), l.len()),
+                                None => self.fatal(&format!(
+                                    "Invalid function reference with ip {}",
+                                    fn_ip
+                                )),
+                            };
+                            if param_names != nargs as usize {
+                                self.fatal(&format!(
+                                    "Function '{}' expects {} arguments, got {}",
+                                    fn_name, param_names, nargs
+                                ));
+                            }
+                            let return_ip = self.inst_ptr + 1;
+                            if self.call_frames.len() >= RECURSION_LIMIT {
+                                self.fatal(&format!(
+                                    "Recursion limit of {} exceeded",
+                                    RECURSION_LIMIT
+                                ));
+                            }
+                            self.call_frames
+                                .push((self.frame_ptr as u32, return_ip as u32, fn_ip));
+                            self.frame_ptr = self.stack_ptr;
+                            self.stack_ptr += nlocals;
+                            jump = Some(fn_ip as usize);
+                            trace!(
+                                "CallValue function '{}' at {}, nargs {}, return ip {}",
+                                fn_name, fn_ip, nargs, return_ip
+                            );
+                        }
+                        ValueRef::Builtin(idx) => {
+                            let (func_impl, name, args_req) = self.builtins[idx as usize];
+                            if !args_req.matches(nargs as usize) {
+                                self.fatal(&format!(
+                                    "Builtin '{}' expects {} arguments, got {}",
+                                    name,
+                                    args_req.describe(),
+                                    nargs
+                                ));
+                            }
+                            trace!(
+                                "CallValue builtin '{}' (#{}) with {} args",
+                                name, idx, nargs
+                            );
+                            let arg_values = &mut self.stack
+                                [self.stack_ptr - nargs as usize + 1..=self.stack_ptr];
+                            let result = match func_impl(arg_values) {
+                                Ok(v) => v,
+                                Err(e) => self.fatal(&format!("Error in function call: {}", e)),
+                            };
+                            self.stack_ptr -= nargs as usize;
+                            self.push(result);
+                        }
+                        _ => self.fatal(&format!(
+                            "Value is not callable: {}",
+                            callable.dbg_display()
+                        )),
                     }
                 }
                 Inst::Return(nargs) => {

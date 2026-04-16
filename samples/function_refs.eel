@@ -1,0 +1,22 @@
+# Functions are values: pass them as arguments, like any other type.
+
+fn sort(list, cmp) {
+    i := 1
+    while i < len(list) {
+        j := i
+        while j > 0 and cmp(get(list, j - 1), get(list, j)) > 0 {
+            a := get(list, j - 1)
+            set(list, j - 1, get(list, j))
+            set(list, j, a)
+            j = j - 1
+        }
+        i = i + 1
+    }
+    return list
+}
+
+fn ascending(a, b) { return a - b }
+fn descending(a, b) { return b - a }
+
+print(sort(list(3, 1, 4, 1, 5, 9, 2, 6), ascending))
+print(sort(list(3, 1, 4, 1, 5, 9, 2, 6), descending))

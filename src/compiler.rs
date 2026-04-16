@@ -127,9 +127,7 @@ impl<'a> Compilation<'a> {
         addr
     }
 
-    fn variable_addr(&mut self, name: &str, node: &AstNode<'_>, to_decl: Option<&str>) -> Addr {
-        trace!("{:?}", self.scopes);
-
+    fn try_variable_addr(&self, name: &str, to_decl: Option<&str>) -> Option<Addr> {
         // If we are currently assigning to a declaration with the same name, we
         // should search for outer scopes to shadow properly.
         let skip_scope = if let Some(to_decl) = to_decl
@@ -143,12 +141,25 @@ impl<'a> Compilation<'a> {
         for scope in self.scopes.iter().rev().skip(skip_scope) {
             for (decl_name, addr) in scope.declarations.iter() {
                 if *decl_name == name {
-                    return *addr;
+                    return Some(*addr);
                 }
             }
         }
+        None
+    }
 
-        self.fatal(&format!("Variable '{}' not declared", name), node);
+    fn variable_addr(&mut self, name: &str, node: &AstNode<'_>, to_decl: Option<&str>) -> Addr {
+        trace!("{:?}", self.scopes);
+        match self.try_variable_addr(name, to_decl) {
+            Some(addr) => addr,
+            None => self.fatal(&format!("Variable '{}' not declared", name), node),
+        }
+    }
+
+    fn push_const_value(&mut self, value: Value) -> ConstAddr {
+        let addr = self.constants.len() as u32;
+        self.constants.push(value);
+        ConstAddr(addr)
     }
 
     fn push_literal(&mut self, value: &Literal) -> ConstAddr {
@@ -189,8 +200,17 @@ impl<'a> Compilation<'a> {
                 self.push_instruction(Inst::LoadConst(addr), expr);
             }
             AstNodeKind::Variable(name) => {
-                let addr = self.variable_addr(name, expr, to_decl);
-                self.push_instruction(Inst::load(addr), expr);
+                if let Some(addr) = self.try_variable_addr(name, to_decl) {
+                    self.push_instruction(Inst::load(addr), expr);
+                } else if let Some(fn_start_ip) = self.functions.get(*name).map(|t| t.0) {
+                    let const_addr = self.push_const_value(Value::function(fn_start_ip));
+                    self.push_instruction(Inst::LoadConst(const_addr), expr);
+                } else if let Some(builtin_idx) = self.builtins.get(*name).map(|t| t.1) {
+                    let const_addr = self.push_const_value(Value::builtin_ref(builtin_idx as u32));
+                    self.push_instruction(Inst::LoadConst(const_addr), expr);
+                } else {
+                    self.fatal(&format!("Variable '{}' not declared", name), expr);
+                }
             }
             AstNodeKind::BinaryOp { left, op, right } => {
                 self.compile_expression(left, to_decl);
@@ -356,6 +376,11 @@ impl<'a> Compilation<'a> {
             }
 
             self.push_instruction(Inst::Call(*fn_start_ip, locals.len() as u32), node);
+        } else if let Some(addr) = self.try_variable_addr(name, None) {
+            // Calling a variable that holds a function/builtin reference: push
+            // the callable on top of the already-pushed args, then dispatch.
+            self.push_instruction(Inst::load(addr), node);
+            self.push_instruction(Inst::CallValue(args.len() as u32), node);
         } else {
             self.fatal(&format!("Undefined function: {}", name), node);
         }
