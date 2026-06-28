@@ -287,6 +287,7 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                 let mut escape = false;
                 let mut has_escapes = false;
                 let mut tok_len = 0;
+                let mut closed = false;
                 let str_content_start = byte_pos + 1; // after the opening quote
                 for (_, next_ch) in iter.by_ref() {
                     tok_len += next_ch.len_utf8();
@@ -296,6 +297,7 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                         continue;
                     }
                     if next_ch == '"' && !escape {
+                        closed = true;
                         break;
                     }
                     if escape {
@@ -311,6 +313,9 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                         tbuf.push(next_ch);
                     }
                     escape = false;
+                }
+                if !closed {
+                    panic_with_pos!("Unterminated string literal");
                 }
                 let str_val: &'a str = if has_escapes {
                     bump.alloc_str(&tbuf)
