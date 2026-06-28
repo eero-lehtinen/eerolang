@@ -1,19 +1,8 @@
-#![allow(clippy::mutable_key_type)]
-use crate::vm::Vm;
 use bumpalo::Bump;
 use clap::Parser;
+use eerolang::{EXTRA_ARGS, ast_parser, compiler, install_panic_hook, tokenizer, vm::Vm};
 use log::{error, warn};
-use std::{sync::OnceLock, time::Instant};
-
-mod ast_parser;
-mod builtins;
-mod compiler;
-mod instructions;
-mod tokenizer;
-mod value;
-mod vm;
-
-static EXTRA_ARGS: OnceLock<Vec<String>> = OnceLock::new();
+use std::{panic, time::Instant};
 
 #[derive(Parser)]
 struct Cli {
@@ -38,6 +27,14 @@ struct Cli {
 }
 
 fn main() {
+    // Language errors unwind as panics (diagnostic already on stderr): hush them and exit 1.
+    install_panic_hook();
+    if panic::catch_unwind(run).is_err() {
+        std::process::exit(1);
+    }
+}
+
+fn run() {
     let cli = Cli::parse();
 
     let mut log = env_logger::builder();

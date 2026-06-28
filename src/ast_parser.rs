@@ -27,7 +27,7 @@ fn fatal_at_last_token(ctx: &ParseCtx, msg: &str) -> ! {
     } else {
         eprintln!("{}: Empty file", "Error".color(colored::Color::BrightRed));
         eprintln!("Parsing terminated due to previous error.");
-        std::process::exit(1);
+        std::panic::panic_any(crate::LangError("Empty file".to_string()));
     }
 }
 
@@ -867,7 +867,12 @@ pub fn fatal_with_stack(
     }
 
     eprintln!("{}", end_msg);
-    std::process::exit(1);
+    std::panic::panic_any(crate::LangError(format!(
+        "{}: at line {}, column {}",
+        msg,
+        token.line + 1,
+        char_col + 1
+    )));
 }
 
 pub fn parse<'b>(bump: &'b Bump, source: &'b str, tokens: &'b [Token<'b>]) -> &'b AstNode<'b> {

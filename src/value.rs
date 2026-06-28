@@ -26,8 +26,6 @@ pub struct Value {
     _marker: PhantomData<Gc<ValueInner>>,
 }
 
-unsafe impl Send for Value {}
-
 pub enum ValueRef<'a> {
     Null,
     Smi(i32),

@@ -198,7 +198,12 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                         colored::Color::BrightRed,
                     )),
                 );
-                std::process::exit(1);
+                std::panic::panic_any(crate::LangError(format!(
+                    "{} at line {}, column {}",
+                    $msg,
+                    row + 1,
+                    char_col + 1
+                )));
             };
         }
         macro_rules! tok {
@@ -318,12 +323,12 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                 tbuf.clear();
             }
             ch if ch.is_alphabetic() || ch == '_' => {
-                let mut byte_end_pos = byte_pos;
+                let mut byte_end_pos = source.len();
                 while let Some(&(i, next_ch)) = iter.peek() {
-                    byte_end_pos = i;
                     if next_ch.is_alphanumeric() || next_ch == '_' {
                         iter.next();
                     } else {
+                        byte_end_pos = i;
                         break;
                     }
                 }
@@ -344,16 +349,16 @@ pub fn tokenize<'a>(bump: &'a Bump, source: &'a str, show: bool) -> Vec<Token<'a
                 }
             }
             ch if ch.is_ascii_digit() => {
-                let mut byte_end_pos = byte_pos;
+                let mut byte_end_pos = source.len();
                 let mut is_float = false;
                 while let Some(&(i, next_ch)) = iter.peek() {
-                    byte_end_pos = i;
                     if next_ch.is_ascii_digit() {
                         iter.next();
                     } else if next_ch == '.' && !is_float {
                         is_float = true;
                         iter.next();
                     } else {
+                        byte_end_pos = i;
                         break;
                     }
                 }

@@ -96,10 +96,8 @@ pub fn builtin_args(_: &[Value]) -> ProgramFnRes {
     Ok(Value::list(
         EXTRA_ARGS
             .get()
-            .unwrap()
-            .iter()
-            .map(|s| Value::string(s.clone()))
-            .collect(),
+            .map(|args| args.iter().map(|s| Value::string(s.clone())).collect())
+            .unwrap_or_default(),
     ))
 }
 

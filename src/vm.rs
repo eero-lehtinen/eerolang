@@ -29,6 +29,8 @@ pub struct Vm<'a> {
     stack_ptr: usize,
     globals: Vec<Value>,
     global_names: Vec<&'a str>,
+    /// Leading globals (addresses `0..N`) that are externally-supplied inputs.
+    input_global_count: usize,
     constants: Vec<Value>,
     builtins: Vec<(ProgramFn, &'a str, ArgsRequred)>,
     /// Maps ip to (function name, parameter names, local variable names)
@@ -69,6 +71,7 @@ impl<'a> Vm<'a> {
             stack_ptr: 0,
             globals: vec![Value::default(); ctx.global_names.len()],
             global_names: ctx.global_names,
+            input_global_count: ctx.input_global_count,
             constants: ctx.constants,
             builtins,
             functions,
@@ -76,6 +79,52 @@ impl<'a> Vm<'a> {
             stop_at_line: None,
             stepping: false,
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.inst_ptr = 0;
+        self.frame_ptr = 0;
+        self.stack_ptr = 0;
+        self.call_frames.clear();
+        self.stop_at_line = None;
+        self.stepping = false;
+        for slot in self.stack.iter_mut() {
+            *slot = Value::default();
+        }
+        for slot in self.globals.iter_mut() {
+            *slot = Value::default();
+        }
+    }
+
+    /// Sets the named input global. Returns `false` if `name` is not one of the
+    /// program's input globals; script-declared globals are not settable, since
+    /// the program overwrites them on the next run.
+    pub fn set_input_global(&mut self, name: &str, value: Value) -> bool {
+        match self.global_names[..self.input_global_count]
+            .iter()
+            .position(|n| *n == name)
+        {
+            Some(idx) => {
+                self.globals[idx] = value;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The program's input global names, in declaration order.
+    pub fn input_global_names(&self) -> &[&'a str] {
+        &self.global_names[..self.input_global_count]
+    }
+
+    pub fn get_global(&self, name: &str) -> Option<&Value> {
+        let idx = self.global_names.iter().position(|n| *n == name)?;
+        Some(&self.globals[idx])
+    }
+
+    /// Every global as `(name, value)` in declaration order.
+    pub fn global_entries(&self) -> impl Iterator<Item = (&'a str, &Value)> {
+        self.global_names.iter().copied().zip(self.globals.iter())
     }
 
     fn fatal(&self, msg: &str) -> ! {

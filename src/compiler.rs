@@ -43,6 +43,9 @@ pub struct Compilation<'a> {
     pub source: &'a str,
     pub tokens: &'a [Token<'a>],
     pub ip_to_token: Vec<usize>,
+    /// Number of leading `global_names` that are externally-supplied inputs
+    /// (declared before the program body); they occupy global addresses `0..N`.
+    pub input_global_count: usize,
     scopes: Vec<ScopeData<'a>>,
 }
 
@@ -64,6 +67,7 @@ impl<'a> Compilation<'a> {
             source,
             tokens,
             ip_to_token: Vec::new(),
+            input_global_count: 0,
             scopes: Vec::new(),
         }
     }
@@ -655,8 +659,26 @@ pub fn compile<'a>(
     source: &'a str,
     tokens: &'a [Token<'a>],
 ) -> Compilation<'a> {
+    compile_with_globals(block, source, tokens, &[])
+}
+
+/// Like [`compile`], but pre-declares `predeclared_globals` in the root scope
+/// so a script can reference them as external inputs instead of erroring.
+pub fn compile_with_globals<'a>(
+    block: &'a AstNode<'a>,
+    source: &'a str,
+    tokens: &'a [Token<'a>],
+    predeclared_globals: &[&'a str],
+) -> Compilation<'a> {
     let mut c = Compilation::new(source, tokens);
-    c.compile_block_full(block);
+    c.input_global_count = predeclared_globals.len();
+    c.block_start(block, None, false);
+    for name in predeclared_globals {
+        c.declare_variable(name, block);
+    }
+    c.compile_block(block);
+    c.block_end();
+
     debug!("Compilation finished. Generated instructions:");
     for (i, ins) in c.instructions.iter().enumerate() {
         debug!("{:4}: {}", i, ins);
