@@ -619,6 +619,17 @@ mod tests {
         VALUE_INNER_DROP_COUNT.with(|c| c.get())
     }
 
+    /// Forces a `collect()` on drop. Declared first in a test so it drops last
+    /// (after the test's `Value` locals), reclaiming their deferred GC boxes so
+    /// Miri's leak checker stays clean. Cycle tests `collect()` explicitly
+    /// instead, because they assert the drop count after collection.
+    struct CollectGuard;
+    impl Drop for CollectGuard {
+        fn drop(&mut self) {
+            dumpster::unsync::collect();
+        }
+    }
+
     // Cycle collection through tagged-pointer Values.
     // These tests assert that ValueInner::drop actually runs, proving
     // dumpster freed the cycle through our transmute-based representation.
@@ -688,6 +699,7 @@ mod tests {
 
     #[test]
     fn non_cyclic_value_drop_counted() {
+        let _collect = CollectGuard;
         // Sanity: normal (non-cyclic) GC values also hit the drop counter.
         reset_drop_count();
         {
@@ -731,6 +743,7 @@ mod tests {
 
     #[test]
     fn gc_tagging() {
+        let _collect = CollectGuard;
         let v = Value::float(3.1);
         assert!(v.is_gc() && !v.is_smi() && !v.is_null());
         assert_eq!(v.as_number(), Some(3.1));
@@ -738,6 +751,7 @@ mod tests {
 
     #[test]
     fn clone_gc_string() {
+        let _collect = CollectGuard;
         let a = Value::string("world".into());
         let b = a.clone();
         match (a.as_value_ref(), b.as_value_ref()) {
@@ -748,6 +762,7 @@ mod tests {
 
     #[test]
     fn equality() {
+        let _collect = CollectGuard;
         assert_eq!(Value::smi(1), Value::smi(1));
         assert_ne!(Value::smi(1), Value::smi(2));
         assert_eq!(Value::null(), Value::null());

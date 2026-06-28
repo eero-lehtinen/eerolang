@@ -11,10 +11,12 @@
 //! assert_eq!(program.global("x").unwrap().as_number(), Some(3.0));
 //! ```
 
+use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Once, OnceLock};
 
 use bumpalo::Bump;
+use ouroboros::self_referencing;
 
 pub mod ast_parser;
 pub mod builtins;
@@ -62,15 +64,24 @@ fn catch_lang<R>(f: impl FnOnce() -> R) -> Result<R, String> {
     }
 }
 
-/// A compiled program bundled with a reusable VM. Owns the arena, source, and
-/// tokens the VM borrows, so it is self-contained and re-runnable.
+/// Self-referential core: owns the arena, source, and token buffer, with the
+/// `Vm` borrowing from all three.
+#[self_referencing]
+struct ProgramInner {
+    bump: Bump,
+    source: String,
+    #[borrows(bump, source)]
+    #[covariant]
+    tokens: Vec<Token<'this>>,
+    #[borrows(bump, source, tokens)]
+    #[covariant]
+    vm: Vm<'this>,
+}
+
 pub struct Program {
-    // Drop order matters: `vm` borrows `tokens`/`source`/`bump`; `tokens` borrows
-    // `source`/`bump`. Fields drop top-to-bottom, so borrowers come first.
-    vm: Vm<'static>,
-    _tokens: Box<[Token<'static>]>,
-    _source: Box<str>,
-    _bump: Box<Bump>,
+    // `ManuallyDrop` so `Drop` can tear down the VM (releasing its GC refs)
+    // before forcing a collection.
+    inner: ManuallyDrop<ProgramInner>,
 }
 
 /// Compiles `script` into a reusable [`Program`].
@@ -83,70 +94,72 @@ pub fn compile(script: &str, global_names: &[&str]) -> Result<Program, String> {
 }
 
 fn build_program(script: &str, global_names: &[&str]) -> Program {
-    let bump: Box<Bump> = Box::new(Bump::new());
-    let source: Box<str> = Box::from(script);
-
-    // SAFETY: `bump`/`source` are heap-boxed (stable addresses) and stored in the
-    // returned `Program`, dropped after the `vm`/`tokens` that borrow them. The
-    // 'static borrows never escape this function.
-    let bump_ref: &'static Bump = unsafe { &*(&*bump as *const Bump) };
-    let source_ref: &'static str = unsafe { &*(&*source as *const str) };
-
-    let predeclared: Vec<&'static str> = global_names
-        .iter()
-        .map(|name| &*bump_ref.alloc_str(name))
-        .collect();
-
-    let tokens: Box<[Token<'static>]> =
-        tokenizer::tokenize(bump_ref, source_ref, false).into_boxed_slice();
-    // SAFETY: as above — the boxed slice outlives `vm`.
-    let tokens_ref: &'static [Token<'static>] = unsafe { &*(&*tokens as *const [Token<'static>]) };
-
-    let block = ast_parser::parse(bump_ref, source_ref, tokens_ref);
-    let compilation = compiler::compile_with_globals(block, source_ref, tokens_ref, &predeclared);
-    let vm = Vm::new(compilation);
-
+    let inner = ProgramInnerBuilder {
+        bump: Bump::new(),
+        source: script.to_string(),
+        tokens_builder: |bump, source| tokenizer::tokenize(bump, source, false),
+        vm_builder: |bump, source, tokens| {
+            let predeclared: Vec<&str> = global_names
+                .iter()
+                .map(|name| &*bump.alloc_str(name))
+                .collect();
+            let block = ast_parser::parse(bump, source, tokens);
+            let compilation = compiler::compile_with_globals(block, source, tokens, &predeclared);
+            Vm::new(compilation)
+        },
+    }
+    .build();
     Program {
-        vm,
-        _tokens: tokens,
-        _source: source,
-        _bump: bump,
+        inner: ManuallyDrop::new(inner),
+    }
+}
+
+impl Drop for Program {
+    fn drop(&mut self) {
+        // SAFETY: `inner` is never touched again. Drop it first (tearing down
+        // the VM and releasing its GC references), then collect.
+        unsafe { ManuallyDrop::drop(&mut self.inner) };
+        // Reclaim this program's now-unreachable GC values.
+        dumpster::unsync::collect();
     }
 }
 
 impl Program {
-    /// Runs from a clean state; all globals (including inputs) start null.
+    /// Runs from a clean state, all globals (including inputs) start null.
     pub fn run(&mut self) -> Result<(), String> {
-        self.vm.reset();
-        catch_lang(AssertUnwindSafe(|| self.vm.run(false)))
+        self.inner.with_vm_mut(|vm| {
+            vm.reset();
+            catch_lang(AssertUnwindSafe(|| vm.run(false)))
+        })
     }
 
     /// Runs from a clean state after setting the given input globals. Only names
-    /// from [`compile`] are allowed; others return `Err` without running.
+    /// from [`compile`] are allowed, others return `Err` without running.
     pub fn run_with_globals(&mut self, globals: &[(&str, Value)]) -> Result<(), String> {
-        self.vm.reset();
-        for (name, value) in globals {
-            if !self.vm.set_input_global(name, value.clone()) {
-                return Err(format!("'{}' is not an input global of this program", name));
+        self.inner.with_vm_mut(|vm| {
+            vm.reset();
+            for (name, value) in globals {
+                if !vm.set_input_global(name, value.clone()) {
+                    return Err(format!("'{}' is not an input global of this program", name));
+                }
             }
-        }
-        catch_lang(AssertUnwindSafe(|| self.vm.run(false)))
+            catch_lang(AssertUnwindSafe(|| vm.run(false)))
+        })
     }
 
     /// A clone of the named global's value, or `None` if absent.
     pub fn global(&self, name: &str) -> Option<Value> {
-        self.vm.get_global(name).cloned()
+        self.inner.borrow_vm().get_global(name).cloned()
     }
 
-    /// Every global as `(name, value)` in declaration order. Borrows `self`;
-    /// `.collect()` for an owned snapshot.
+    /// Every global as `(name, value)` in declaration order.
     pub fn globals(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.vm.global_entries()
+        self.inner.borrow_vm().global_entries()
     }
 
     /// The input global names supplied to [`compile`], in declaration order.
     pub fn input_globals(&self) -> &[&str] {
-        self.vm.input_global_names()
+        self.inner.borrow_vm().input_global_names()
     }
 }
 
