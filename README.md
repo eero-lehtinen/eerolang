@@ -20,6 +20,32 @@ The instructions can also be stepped through (it shows even more info in a debug
 eerolang <file.eel> --step
 ```
 
+## Use as a library
+
+Eerolang can also be embedded in a Rust program to run scripts and exchange data
+with them. Add it as a git dependency:
+
+```sh
+cargo add eerolang --git https://github.com/eero-lehtinen/eerolang
+```
+
+Then use the API defined in [`src/lib.rs`](src/lib.rs): `compile` a script into a
+reusable `Program`, optionally pre-declaring input globals, then `run` it and read
+back any global by name.
+
+```rust
+use eerolang::{compile, Value};
+
+// Pre-declare `x` as an input global the script can read.
+let mut program = compile("result := x * 2", &["x"]).unwrap();
+
+// Supply inputs and run; the VM is reusable across runs.
+program.run_with_globals(&[("x", Value::number(21.0))]).unwrap();
+assert_eq!(program.global("result").unwrap().as_int(), Some(42));
+```
+
+Compile errors, parse errors, and runtime errors are all returned as `Err(String)`.
+
 ## Motivation
 
 I couldn't think of a language to try this year for the [Advent of Code 2025](https://adventofcode.com/2025) challenge, so I decided to make my own. Check out [my solutions](https://github.com/eero-lehtinen/advent-of-code-2025) if you want. Also I've never made a language before.
