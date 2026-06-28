@@ -144,9 +144,27 @@ fn substr_is_char_indexed() {
 }
 
 #[test]
-fn unicode_identifiers() {
+fn unicode_letter_identifiers_are_allowed() {
     // `is_alphabetic` accepts Unicode letters, so these are valid identifiers.
     assert_eq!(int("café := 3\nr := café + 1", "r"), 4);
+    assert_eq!(int("日本語 := 5\nr := 日本語 + 1", "r"), 6);
+    assert_eq!(int("λ := 10\nr := λ * 2", "r"), 20);
+    assert_eq!(int("привет := 7\nr := привет", "r"), 7);
+}
+
+#[test]
+fn unicode_function_names_are_allowed() {
+    assert_eq!(int("fn café(n) { return n * 2 }\nr := café(21)", "r"), 42);
+}
+
+#[test]
+fn emoji_identifiers_are_rejected() {
+    // Emoji are neither alphabetic nor alphanumeric, so they cannot start or
+    // continue an identifier. Rejection must be a clean compile error (the
+    // `compile_err` helper would itself panic if the host crashed instead).
+    assert!(compile_err("🎉 := 1"));
+    assert!(compile_err("x🎉 := 1"));
+    assert!(compile_err("r := 🎉"));
 }
 
 // ------------------------------------------------------------------- parser
