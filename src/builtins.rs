@@ -373,13 +373,14 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
         Some(i) => i,
         _ => arg_bail!("string, int, opt int", args),
     };
+    let char_count = string.chars().count() as i64;
     let mut end = if args.get(2).is_some() {
         match args[2].as_int() {
             Some(i) => i,
             _ => arg_bail!("string, int, opt int", args),
         }
     } else {
-        string.len() as i64
+        char_count
     };
 
     if start < 0 || start > end {
@@ -389,12 +390,16 @@ pub fn builtin_substr(args: &[Value]) -> ProgramFnRes {
         ));
     }
     if end < 0 {
-        end = string.len() as i64 - end.abs();
+        end = char_count - end.abs();
     }
-    end = end.min(string.len() as i64);
+    end = end.min(char_count);
 
-    let substring = &string[start as usize..end as usize];
-    Ok(Value::string(substring.to_owned()))
+    let substring: String = string
+        .chars()
+        .skip(start as usize)
+        .take((end - start) as usize)
+        .collect();
+    Ok(Value::string(substring))
 }
 
 const PUSH_ARGS: u32 = 2;
@@ -540,10 +545,10 @@ pub fn builtin_get(args: &[Value]) -> ProgramFnRes {
 
             let index = index as usize;
 
-            if index >= s.len() {
-                out_of_bounds_bail!(s.len(), index);
+            match s.chars().nth(index) {
+                Some(c) => Ok(Value::string(c.to_string())),
+                None => out_of_bounds_bail!(s.chars().count(), index),
             }
-            Ok(Value::string(s.chars().nth(index).unwrap().to_string()))
         }
         ValueRef::List(l) => {
             let Some(index) = index_or_key.as_int() else {
@@ -692,7 +697,7 @@ pub fn builtin_len(args: &[Value]) -> ProgramFnRes {
     };
 
     let len = match len.as_value_ref() {
-        ValueRef::String(s) => s.len() as i64,
+        ValueRef::String(s) => s.chars().count() as i64,
         ValueRef::List(l) => l.borrow().len() as i64,
         ValueRef::Queue(q) => q.borrow().len() as i64,
         ValueRef::Map(m) => m.borrow().inner.len() as i64,

@@ -105,6 +105,50 @@ fn bang_without_equals_is_rejected() {
     assert!(compile_err("x := 1 ! 2"));
 }
 
+#[test]
+fn unicode_string_literals_round_trip() {
+    assert_eq!(string("x := \"héllo wörld\"", "x"), "héllo wörld");
+    assert_eq!(string("x := \"café\" + \" ☕\"", "x"), "café ☕");
+    assert_eq!(string("x := \"日本語\"", "x"), "日本語");
+}
+
+#[test]
+fn len_counts_characters_not_bytes() {
+    assert_eq!(int("x := len(\"héllo\")", "x"), 5);
+    assert_eq!(int("x := len(\"日本語\")", "x"), 3);
+    // Emoji outside the BMP are a single scalar value.
+    assert_eq!(int("x := len(\"a🎉b\")", "x"), 3);
+}
+
+#[test]
+fn string_subscript_is_char_indexed() {
+    assert_eq!(string("x := \"héllo\"[0]", "x"), "h");
+    assert_eq!(string("x := \"héllo\"[1]", "x"), "é");
+    assert_eq!(string("x := \"héllo\"[4]", "x"), "o");
+    assert_eq!(string("x := \"a🎉b\"[1]", "x"), "🎉");
+}
+
+#[test]
+fn string_subscript_past_last_char_is_clean_out_of_bounds() {
+    // "héllo" has 5 chars (6 bytes). Index 5 must be a clean runtime error,
+    // not a panic from indexing past the char count.
+    assert!(run_err("x := \"héllo\"[5]"));
+}
+
+#[test]
+fn substr_is_char_indexed() {
+    assert_eq!(string("x := substr(\"héllo\", 1, 3)", "x"), "él");
+    // A range whose byte span would split a multi-byte char must not panic.
+    assert_eq!(string("x := substr(\"héllo\", 0, 2)", "x"), "hé");
+    assert_eq!(string("x := substr(\"a🎉b\", 1, 2)", "x"), "🎉");
+}
+
+#[test]
+fn unicode_identifiers() {
+    // `is_alphabetic` accepts Unicode letters, so these are valid identifiers.
+    assert_eq!(int("café := 3\nr := café + 1", "r"), 4);
+}
+
 // ------------------------------------------------------------------- parser
 
 #[test]

@@ -449,13 +449,15 @@ pub fn report_source(
         if let Some((pos, _, color)) = highlight
             && line == pos.row
         {
+            let span_chars = source
+                .get(pos.byte_pos_start..pos.byte_pos_end)
+                .map_or(1, |s| s.chars().count());
             writeln!(
                 out,
                 "{}{}{}",
                 " ".repeat(pos.char_col + 7),
                 "^".color(color),
-                "~".repeat((pos.byte_pos_end - pos.byte_pos_start).saturating_sub(1))
-                    .color(color)
+                "~".repeat(span_chars.saturating_sub(1)).color(color)
             )
             .unwrap();
         }
@@ -504,7 +506,8 @@ pub fn report_source(
             token_iter.next();
         }
 
-        let ch = bytes[byte_pos] as char;
+        // `byte_pos` is always on a char boundary (we advance by `len_utf8`).
+        let ch = source[byte_pos..].chars().next().unwrap();
         if ch == '\n' {
             writeln!(stderr).unwrap();
 
@@ -521,11 +524,11 @@ pub fn report_source(
             let tok = token_iter.peek();
             let color = hl_color(byte_pos, tok)
                 .unwrap_or_else(|| tok.map(|t| t.kind.color()).unwrap_or(colored::Color::White));
-            let text = &source[byte_pos..byte_pos + 1].color(color);
+            let text = source[byte_pos..byte_pos + ch.len_utf8()].color(color);
             write!(stderr, "{}", text).unwrap();
         }
 
-        byte_pos += 1;
+        byte_pos += ch.len_utf8();
     }
 
     writeln!(&mut stderr).unwrap();
