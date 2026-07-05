@@ -39,7 +39,7 @@ use eerolang::{compile, Value};
 // Pre-declare `x` as an input global the script can read.
 let mut program = compile("result := x * 2", &["x"]).unwrap();
 
-// Supply inputs and run; the VM is reusable across runs.
+// Supply inputs and run, the program is reusable across runs.
 program.run_with_globals(&[("x", Value::number(21.0))]).unwrap();
 assert_eq!(program.global("result").unwrap().as_int(), Some(42));
 ```
