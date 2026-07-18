@@ -17,6 +17,10 @@ struct Cli {
     #[clap(short, long)]
     tokens: bool,
 
+    /// Print tokenizer, parser, compiler, and execution timings
+    #[clap(long)]
+    timings: bool,
+
     /// 'debug' shows more compilation results, 'trace' shows instruction level details
     #[clap(short, long, value_parser = ["info", "debug", "trace"])]
     log_level: Option<String>,
@@ -89,11 +93,13 @@ fn run() {
     Vm::new(compilation).run(cli.step);
     let exec_end = Instant::now();
 
-    println!(
-        "tokenized in {:?}, parsed in {:?}, compiled in {:?}, executed in {:?}",
-        tok_end - tok_start,
-        parse_end - parse_start,
-        compile_end - compile_start,
-        exec_end - exec_start
-    );
+    if cli.timings {
+        println!(
+            "tokenized in {:?}, parsed in {:?}, compiled in {:?}, executed in {:?}",
+            tok_end - tok_start,
+            parse_end - parse_start,
+            compile_end - compile_start,
+            exec_end - exec_start
+        );
+    }
 }
