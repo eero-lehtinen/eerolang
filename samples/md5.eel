@@ -1,0 +1,125 @@
+# Structure and names follow https://en.wikipedia.org/wiki/MD5#Pseudocode.
+fn u32(value) {
+    return shift_right_unsigned(value, 0)
+}
+
+fn leftrotate(value, amount) {
+    return bit_or(shift_left(value, amount), shift_right_unsigned(value, 32 - amount))
+}
+
+fn little_endian_hex(word) {
+    digits := "0123456789abcdef"
+    result := ""
+    for i in range(4) {
+        byte := bit_and(shift_right_unsigned(word, i * 8), 255)
+        result = result + digits[shift_right(byte, 4)] + digits[bit_and(byte, 15)]
+    }
+    return result
+}
+
+fn md5(message) {
+    s := list(
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+    )
+    K := list(
+        3614090360, 3905402710, 606105819, 3250441966,
+        4118548399, 1200080426, 2821735955, 4249261313,
+        1770035416, 2336552879, 4294925233, 2304563134,
+        1804603682, 4254626195, 2792965006, 1236535329,
+        4129170786, 3225465664, 643717713, 3921069994,
+        3593408605, 38016083, 3634488961, 3889429448,
+        568446438, 3275163606, 4107603335, 1163531501,
+        2850285829, 4243563512, 1735328473, 2368359562,
+        4294588738, 2272392833, 1839030562, 4259657740,
+        2763975236, 1272893353, 4139469664, 3200236656,
+        681279174, 3936430074, 3572445317, 76029189,
+        3654602809, 3873151461, 530742520, 3299628645,
+        4096336452, 1126891415, 2878612391, 4237533241,
+        1700485571, 2399980690, 4293915773, 2240044497,
+        1873313359, 4264355552, 2734768916, 1309151649,
+        4149444226, 3174756917, 718787259, 3951481745
+    )
+
+    a0 := 1732584193
+    b0 := 4023233417
+    c0 := 2562383102
+    d0 := 271733878
+
+    original_length_bits := len(message) * 8
+    push(message, 128)
+    while mod(len(message), 64) != 56 {
+        push(message, 0)
+    }
+
+    length_low := u32(original_length_bits)
+    length_high := int(original_length_bits / 4294967296)
+    for i in range(4) {
+        push(message, bit_and(shift_right_unsigned(length_low, i * 8), 255))
+    }
+    for i in range(4) {
+        push(message, bit_and(shift_right_unsigned(length_high, i * 8), 255))
+    }
+
+    for chunk in range(len(message) / 64) {
+        M := list()
+        chunk_start := chunk * 64
+        for j in range(16) {
+            byte := chunk_start + j * 4
+            word := bit_or(
+                bit_or(message[byte], shift_left(message[byte + 1], 8)),
+                bit_or(
+                    shift_left(message[byte + 2], 16),
+                    shift_left(message[byte + 3], 24)
+                )
+            )
+            push(M, word)
+        }
+
+        A := a0
+        B := b0
+        C := c0
+        D := d0
+
+        for i in range(64) {
+            F := 0
+            g := 0
+            if i < 16 {
+                F = bit_or(bit_and(B, C), bit_and(bit_not(B), D))
+                g = i
+            } else {
+                if i < 32 {
+                    F = bit_or(bit_and(D, B), bit_and(bit_not(D), C))
+                    g = mod(5 * i + 1, 16)
+                } else {
+                    if i < 48 {
+                        F = bit_xor(bit_xor(B, C), D)
+                        g = mod(3 * i + 5, 16)
+                    } else {
+                        F = bit_xor(C, bit_or(B, bit_not(D)))
+                        g = mod(7 * i, 16)
+                    }
+                }
+            }
+
+            F = u32(F + A + K[i] + M[g])
+            A = D
+            D = C
+            C = B
+            B = u32(B + leftrotate(F, s[i]))
+        }
+
+        a0 = u32(a0 + A)
+        b0 = u32(b0 + B)
+        c0 = u32(c0 + C)
+        d0 = u32(d0 + D)
+    }
+
+    return little_endian_hex(a0) + little_endian_hex(b0)
+        + little_endian_hex(c0) + little_endian_hex(d0)
+}
+
+filename := args()[0]
+print(md5(readbytes(filename)))

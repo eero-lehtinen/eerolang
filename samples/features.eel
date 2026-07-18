@@ -70,6 +70,8 @@ sleep(10)
 
 # Reads a file and returns its content as a string
 file := readfile("samples/features.eel")
+# Reads a file without decoding and returns a list of byte values
+data := readbytes("samples/features.eel")
 # Trim whitespace from both ends of a string
 trimmed := trim(file)
 # Splits a string by a delimiter and returns a list of substrings
@@ -123,6 +125,13 @@ length := len(list)
 
 # Math
 x = mod(10, 3)
+x = bit_and(240, 204)
+x = bit_or(240, 15)
+x = bit_xor(170, 255)
+x = bit_not(0)
+x = shift_left(1, 8)
+x = shift_right(256, 8)
+x = shift_right_unsigned(0 - 1, 1)
 x = pow(2, 3)
 x = sqrt(2)
 x = min(1, 2)
@@ -131,8 +140,4 @@ x = max(1, 2)
 # Script arguments following `--` in the command line
 args := args()
 print("Script arguments:", args)
-
-
-
-
 

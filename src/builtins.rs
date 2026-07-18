@@ -233,6 +233,25 @@ pub fn builtin_readfile(args: &[Value]) -> ProgramFnRes {
     Ok(Value::string(content))
 }
 
+const READBYTES_ARGS: u32 = 1;
+pub fn builtin_readbytes(args: &[Value]) -> ProgramFnRes {
+    let [filename] = args else {
+        arg_bail!("string", args);
+    };
+    let ValueRef::String(filename) = filename.as_value_ref() else {
+        arg_bail!("string", args);
+    };
+
+    let bytes = std::fs::read(filename)
+        .map_err(|error| format!("Failed to read file '{}': {}", filename, error))?;
+    Ok(Value::list(
+        bytes
+            .into_iter()
+            .map(|byte| Value::int(byte.into()))
+            .collect(),
+    ))
+}
+
 const TRIM_ARGS: u32 = 1;
 pub fn builtin_trim(args: &[Value]) -> ProgramFnRes {
     let [s] = &args else {
@@ -728,6 +747,80 @@ pub fn builtin_mod(args: &[Value]) -> ProgramFnRes {
     Ok(Value::int(a % b))
 }
 
+fn number_pair(args: &[Value]) -> Result<(&Value, &Value), String> {
+    let [left, right] = args else {
+        return Err(format!(
+            "Expects (number, number), got ({})",
+            type_display(args)
+        ));
+    };
+    if left.as_number().is_none() || right.as_number().is_none() {
+        return Err(format!(
+            "Expects (number, number), got ({})",
+            type_display(args)
+        ));
+    };
+    Ok((left, right))
+}
+
+fn to_uint32(value: &Value) -> u32 {
+    let number = value.as_number().unwrap();
+    if !number.is_finite() || number == 0.0 {
+        return 0;
+    }
+    number.trunc().rem_euclid(4_294_967_296.0) as u32
+}
+
+fn to_int32(value: &Value) -> i32 {
+    to_uint32(value) as i32
+}
+
+pub fn builtin_bit_and(args: &[Value]) -> ProgramFnRes {
+    let (left, right) = number_pair(args)?;
+    Ok(Value::smi(to_int32(left) & to_int32(right)))
+}
+
+pub fn builtin_bit_or(args: &[Value]) -> ProgramFnRes {
+    let (left, right) = number_pair(args)?;
+    Ok(Value::smi(to_int32(left) | to_int32(right)))
+}
+
+pub fn builtin_bit_xor(args: &[Value]) -> ProgramFnRes {
+    let (left, right) = number_pair(args)?;
+    Ok(Value::smi(to_int32(left) ^ to_int32(right)))
+}
+
+const BIT_NOT_ARGS: u32 = 1;
+pub fn builtin_bit_not(args: &[Value]) -> ProgramFnRes {
+    let [value] = args else {
+        arg_bail!("number", args);
+    };
+    if value.as_number().is_none() {
+        arg_bail!("number", args);
+    };
+    Ok(Value::smi(!to_int32(value)))
+}
+
+fn shift_args(args: &[Value]) -> Result<(i32, u32), String> {
+    let (value, amount) = number_pair(args)?;
+    Ok((to_int32(value), to_uint32(amount) & 31))
+}
+
+pub fn builtin_shift_left(args: &[Value]) -> ProgramFnRes {
+    let (value, amount) = shift_args(args)?;
+    Ok(Value::smi(value.wrapping_shl(amount)))
+}
+
+pub fn builtin_shift_right(args: &[Value]) -> ProgramFnRes {
+    let (value, amount) = shift_args(args)?;
+    Ok(Value::smi(value >> amount))
+}
+
+pub fn builtin_shift_right_unsigned(args: &[Value]) -> ProgramFnRes {
+    let (value, amount) = shift_args(args)?;
+    Ok(Value::int(((value as u32) >> amount).into()))
+}
+
 const POW_ARGS: u32 = 2;
 pub fn builtin_pow(args: &[Value]) -> ProgramFnRes {
     let [base, exponent] = args else {
@@ -866,6 +959,11 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
             builtin_readfile,
             ArgsRequred::Exact(READFILE_ARGS),
         ),
+        (
+            "readbytes",
+            builtin_readbytes,
+            ArgsRequred::Exact(READBYTES_ARGS),
+        ),
         ("trim", builtin_trim, ArgsRequred::Exact(TRIM_ARGS)),
         ("split", builtin_split, ArgsRequred::Exact(SPLIT_ARGS)),
         ("int", builtin_int, ArgsRequred::Exact(INT_ARGS)),
@@ -886,6 +984,17 @@ pub fn all_builtins() -> Vec<(&'static str, ProgramFn, ArgsRequred)> {
         ("clone", builtin_clone, ArgsRequred::Exact(CLONE_ARGS)),
         ("len", builtin_len, ArgsRequred::Exact(LEN_ARGS)),
         ("mod", builtin_mod, ArgsRequred::Exact(MOD_ARGS)),
+        ("bit_and", builtin_bit_and, ArgsRequred::Exact(2)),
+        ("bit_or", builtin_bit_or, ArgsRequred::Exact(2)),
+        ("bit_xor", builtin_bit_xor, ArgsRequred::Exact(2)),
+        ("bit_not", builtin_bit_not, ArgsRequred::Exact(BIT_NOT_ARGS)),
+        ("shift_left", builtin_shift_left, ArgsRequred::Exact(2)),
+        ("shift_right", builtin_shift_right, ArgsRequred::Exact(2)),
+        (
+            "shift_right_unsigned",
+            builtin_shift_right_unsigned,
+            ArgsRequred::Exact(2),
+        ),
         ("pow", builtin_pow, ArgsRequred::Exact(POW_ARGS)),
         ("sqrt", builtin_sqrt, ArgsRequred::Exact(SQRT_ARGS)),
         ("min", builtin_min, ArgsRequred::AtLeast(2)),

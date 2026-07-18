@@ -58,6 +58,11 @@ The types are: `null`, `number`, `string`, `range`, `list`, `queue`, `map`, and 
 
 The syntax is a combination of Lua, Go and Rust. Declarations use the walrus operator from Go. For-loops and logical expressions are from Lua. Fn and bracing styles are from Rust. The ad hoc grammar also turned out to not need newlines or semicolons at all. Multiple statements in the same file are perfectly fine as long as they are separated by any whitespace (e.g. `x := 10 print(x)`).
 
+The bitwise builtins follow JavaScript semantics: operands are converted to
+32-bit integers, shift counts use their low five bits, and results are signed
+32-bit integers. `shift_right_unsigned` corresponds to JavaScript's `>>>` and
+returns an unsigned value from `0` to `4294967295`.
+
 I spent way too much time making the error messages good, so enjoy that, me.
 
 Below is an example showing off the features of the language:
@@ -140,6 +145,8 @@ sleep(10)
 
 # Reads a file and returns its content as a string
 file := readfile("samples/features.eel")
+# Reads a file without decoding and returns a list of byte values
+data := readbytes("image.png")
 # Trim whitespace from both ends of a string
 trimmed := trim(file)
 # Splits a string by a delimiter and returns a list of substrings
@@ -193,6 +200,13 @@ length := len(list)
 
 # Math
 x = mod(10, 3)
+x = bit_and(240, 204)
+x = bit_or(240, 15)
+x = bit_xor(170, 255)
+x = bit_not(0)
+x = shift_left(1, 8)
+x = shift_right(256, 8)
+x = shift_right_unsigned(0 - 1, 1)
 x = pow(2, 3)
 x = sqrt(2)
 x = min(1, 2)

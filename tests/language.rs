@@ -411,6 +411,48 @@ fn string_builtins() {
 }
 
 #[test]
+fn readbytes_preserves_arbitrary_file_bytes() {
+    use eerolang::builtins::builtin_readbytes;
+
+    let path = std::env::temp_dir().join(format!("eerolang-readbytes-{}.bin", std::process::id()));
+    std::fs::write(&path, [0, 0xff, 0x80, b'\n']).unwrap();
+    let value = builtin_readbytes(&[Value::string(path.to_string_lossy().into_owned())]).unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    let ValueRef::List(values) = value.as_value_ref() else {
+        panic!("readbytes did not return a list");
+    };
+    let bytes: Vec<_> = values
+        .borrow()
+        .iter()
+        .map(|value| value.as_int().unwrap() as u8)
+        .collect();
+    assert_eq!(bytes, [0, 0xff, 0x80, b'\n']);
+}
+
+#[test]
+fn bit_operation_builtins() {
+    assert_eq!(int("r := bit_and(240, 204)", "r"), 192);
+    assert_eq!(int("r := bit_or(240, 15)", "r"), 255);
+    assert_eq!(int("r := bit_xor(170, 255)", "r"), 85);
+    assert_eq!(int("r := bit_not(0)", "r"), -1);
+    assert_eq!(int("r := bit_or(4294967295, 0)", "r"), -1);
+    assert_eq!(int("r := bit_or(3.9, 0)", "r"), 3);
+    assert_eq!(int("r := shift_left(1, 31)", "r"), -2_147_483_648);
+    assert_eq!(int("r := shift_left(1, 40)", "r"), 256);
+    assert_eq!(int("r := shift_left(1, 64)", "r"), 1);
+    assert_eq!(int("r := shift_right(-8, 2)", "r"), -2);
+    assert_eq!(
+        int("r := shift_right_unsigned(0 - 1, 0)", "r"),
+        4_294_967_295
+    );
+    assert_eq!(
+        int("r := shift_right_unsigned(0 - 1, 1)", "r"),
+        2_147_483_647
+    );
+}
+
+#[test]
 fn division_by_zero_is_a_runtime_error() {
     assert!(run_err("r := 1 / 0"));
 }
