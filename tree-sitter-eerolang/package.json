@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-eerolang",
+  "version": "0.1.0",
+  "description": "Eerolang grammar for tree-sitter",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.9"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  }
+}

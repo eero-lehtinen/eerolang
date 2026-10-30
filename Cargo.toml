@@ -2,6 +2,7 @@
 name = "eerolang"
 version = "0.1.0"
 edition = "2024"
+exclude = ["tree-sitter-eerolang"]
 
 [dependencies]
 bumpalo = { version = "3.20.2", features = ["collections"] }

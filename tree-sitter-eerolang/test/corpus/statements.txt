@@ -1,0 +1,171 @@
+================================================================================
+Declaration and assignment
+================================================================================
+
+x := 10
+x = x + 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (number))
+  (assignment
+    (identifier)
+    (binary_expression
+      (identifier)
+      (number))))
+
+================================================================================
+Subscript assignment
+================================================================================
+
+matrix[1][0] = 99
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (subscript_assignment
+    (subscript_expression
+      (subscript_expression
+        (identifier)
+        (number))
+      (number))
+    (number)))
+
+================================================================================
+Statements without separators
+================================================================================
+
+x := 10 print(x)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (number))
+  (call_expression
+    (identifier)
+    (arguments
+      (identifier))))
+
+================================================================================
+Function definition
+================================================================================
+
+fn add(a, b,) {
+    return a + b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    (identifier)
+    (parameters
+      (identifier)
+      (identifier))
+    (block
+      (return_statement
+        (binary_expression
+          (identifier)
+          (identifier))))))
+
+================================================================================
+If else
+================================================================================
+
+if x > 4 {
+    print("big")
+} else {
+    print("small")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (binary_expression
+      (identifier)
+      (number))
+    (block
+      (call_expression
+        (identifier)
+        (arguments
+          (string
+            (string_content)))))
+    (block
+      (call_expression
+        (identifier)
+        (arguments
+          (string
+            (string_content)))))))
+
+================================================================================
+For loops
+================================================================================
+
+for i in range(10) {
+    continue
+}
+for _, val in list {
+    break
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (for_statement
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (number)))
+    (block
+      (continue_statement)))
+  (for_statement
+    (identifier)
+    (identifier)
+    (identifier)
+    (block
+      (break_statement))))
+
+================================================================================
+While loop
+================================================================================
+
+while i < 10 {
+    i = i + 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (while_statement
+    (binary_expression
+      (identifier)
+      (number))
+    (block
+      (assignment
+        (identifier)
+        (binary_expression
+          (identifier)
+          (number))))))
+
+================================================================================
+Comments
+================================================================================
+
+# leading
+x := 1 # trailing
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (declaration
+    (identifier)
+    (number))
+  (comment))

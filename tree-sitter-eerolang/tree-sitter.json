@@ -1,0 +1,33 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "eerolang",
+      "camelcase": "Eerolang",
+      "title": "Eerolang",
+      "scope": "source.eerolang",
+      "file-types": ["eel"],
+      "injection-regex": "^(eerolang|eel)$",
+      "class-name": "TreeSitterEerolang",
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Eerolang grammar for tree-sitter",
+    "authors": [{ "name": "Eero Lehtinen" }],
+    "links": { "repository": "https://github.com/eero-lehtinen/eerolang" }
+  },
+  "bindings": {
+    "c": false,
+    "go": false,
+    "java": false,
+    "node": false,
+    "python": false,
+    "rust": false,
+    "swift": false,
+    "zig": false
+  }
+}

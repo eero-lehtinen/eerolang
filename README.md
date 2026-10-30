@@ -217,6 +217,43 @@ args := args()
 print("Script arguments:", args)
 ```
 
+## Editor support
+
+[`tree-sitter-eerolang`](tree-sitter-eerolang) contains a tree-sitter grammar and Neovim queries (highlights, locals, folds, indents, textobjects, context).
+
+### Neovim
+
+Requires [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) on the `main` branch and the `tree-sitter` CLI. Add this to your config, then run `:TSInstall eerolang`:
+
+```lua
+vim.filetype.add({ extension = { eel = "eerolang" } })
+
+vim.api.nvim_create_autocmd("User", {
+  pattern = "TSUpdate",
+  callback = function()
+    require("nvim-treesitter.parsers").eerolang = {
+      install_info = {
+        url = "https://github.com/eero-lehtinen/eerolang",
+        location = "tree-sitter-eerolang",
+        queries = "tree-sitter-eerolang/queries",
+      },
+    }
+  end,
+})
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "eerolang",
+  callback = function(ev)
+    vim.treesitter.start(ev.buf)
+    vim.bo[ev.buf].commentstring = "# %s"
+  end,
+})
+```
+
+### Grammar development
+
+Run `tree-sitter generate && tree-sitter test` in `tree-sitter-eerolang` after editing `grammar.js`. To test changes in Neovim before pushing, replace `url` above with `path = "/path/to/eerolang"` and reinstall with `:TSInstall! eerolang`. With `path`, the queries are symlinked, so query edits apply without reinstalling.
+
 ## Miri
 
 The VM uses `unsafe` for tagged pointers (SMI encoding) and garbage collection via `transmute`, so [Miri](https://github.com/rust-lang/miri) is useful for checking these for undefined behavior:

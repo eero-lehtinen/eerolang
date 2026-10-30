@@ -1,0 +1,146 @@
+================================================================================
+Operator precedence
+================================================================================
+
+x := a or b and c == d + e * f
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (binary_expression
+      (identifier)
+      (binary_expression
+        (identifier)
+        (binary_expression
+          (identifier)
+          (binary_expression
+            (identifier)
+            (binary_expression
+              (identifier)
+              (identifier))))))))
+
+================================================================================
+Left associativity
+================================================================================
+
+x := a - b - c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (identifier))
+      (identifier))))
+
+================================================================================
+Unary minus binds to the subscripted operand
+================================================================================
+
+x := -a[0] * 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (binary_expression
+      (unary_expression
+        (subscript_expression
+          (identifier)
+          (number)))
+      (number))))
+
+================================================================================
+Parenthesized expression
+================================================================================
+
+x := (a + b) * c
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (binary_expression
+      (parenthesized_expression
+        (binary_expression
+          (identifier)
+          (identifier)))
+      (identifier))))
+
+================================================================================
+Chained subscripts on a call
+================================================================================
+
+x := f(1)[0][key]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (subscript_expression
+      (subscript_expression
+        (call_expression
+          (identifier)
+          (arguments
+            (number)))
+        (number))
+      (identifier))))
+
+================================================================================
+Literals
+================================================================================
+
+x := list(1, 3.14, 1., null, "a\"b\n", "multi
+line")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (number)
+        (number)
+        (number)
+        (null)
+        (string
+          (string_content)
+          (escape_sequence)
+          (string_content)
+          (escape_sequence))
+        (string
+          (string_content))))))
+
+================================================================================
+Unicode identifiers
+================================================================================
+
+äö_1 := 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (declaration
+    (identifier)
+    (number)))
+
+================================================================================
+Call statement cannot continue as an expression
+:error
+================================================================================
+
+f(x) - 1
+
+--------------------------------------------------------------------------------
+
+
