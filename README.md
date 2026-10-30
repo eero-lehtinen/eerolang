@@ -234,6 +234,7 @@ vim.api.nvim_create_autocmd("User", {
     require("nvim-treesitter.parsers").eerolang = {
       install_info = {
         url = "https://github.com/eero-lehtinen/eerolang",
+        branch = "master",
         location = "tree-sitter-eerolang",
         queries = "tree-sitter-eerolang/queries",
       },
